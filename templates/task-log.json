@@ -1,0 +1,25 @@
+{
+  "task_id": "<task-id>",
+  "source_type": "SSTD_CHANGE",
+  "source_reference": "<commit-or-issue-url>",
+  "status": "RECEIVED",
+  "started_at": "<ISO-8601 timestamp>",
+  "finished_at": null,
+  "policy_version": "<git-commit-or-version>",
+  "guide_version": "<git-commit-or-version>",
+  "commands": [
+    {
+      "name": "<build-test-or-lint>",
+      "command": "<verified-command>",
+      "exit_code": null,
+      "started_at": null,
+      "finished_at": null,
+      "artifact_paths": []
+    }
+  ],
+  "approvals": [],
+  "checkpoints": [],
+  "draft_pr_url": null,
+  "unresolved_issues": [],
+  "stop_reason": null
+}

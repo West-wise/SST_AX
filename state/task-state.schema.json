@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://west-wise.github.io/sst-ax/schemas/task-state.schema.json",
+  "title": "SST-AX Task State",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "source_type",
+    "source_reference",
+    "status",
+    "risk_level",
+    "created_at",
+    "updated_at",
+    "attempt"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "pattern": "^(sstd-sync|sstc-feature)-[0-9]{8}-[0-9]{4}$"
+    },
+    "source_type": {
+      "type": "string",
+      "enum": ["SSTD_CHANGE", "SSTC_FEATURE"]
+    },
+    "source_reference": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "RECEIVED",
+        "ANALYZING",
+        "WAITING_APPROVAL",
+        "IMPLEMENTING",
+        "VALIDATING",
+        "READY_FOR_REVIEW",
+        "COMPLETED",
+        "REJECTED",
+        "DEFERRED_RATE_LIMIT",
+        "ANALYSIS_FAILED",
+        "IMPLEMENTATION_FAILED",
+        "BUILD_FAILED",
+        "TEST_FAILED",
+        "SECURITY_REVIEW_FAILED",
+        "PROTOCOL_APPROVAL_REQUIRED"
+      ]
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": ["NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    },
+    "branch": {
+      "type": "string",
+      "pattern": "^ax/sstc-sync/"
+    },
+    "approval_reason": {
+      "type": ["string", "null"]
+    },
+    "checkpoint_path": {
+      "type": ["string", "null"],
+      "pattern": "^state/checkpoints/.+\\.json$"
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "deferred_until": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "draft_pr_url": {
+      "type": ["string", "null"],
+      "format": "uri"
+    },
+    "unresolved_issues": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}
