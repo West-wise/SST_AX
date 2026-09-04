@@ -126,3 +126,28 @@ SST-AX는 SSTD Release 또는 승인된 source commit을 입력으로 받아 SST
 - false positive/negative 영향 분석 비율
 - 일일 보고 생성·전송 성공률
 - 보고 지연 시간과 재시도 횟수
+# 로컬 Task 입력 (구현 완료)
+
+첫 번째 실행 가능 SST-AX 경로는 로컬 전용이다. Codex, Slack, GitHub를 호출하지 않으며 SSTD/SSTC 대상 저장소에도 쓰지 않는다.
+
+SSTC 기능 요청 Task를 생성하고 상태를 검증한 뒤 초기 read-only 증적 보고서를 생성한다.
+
+```bash
+python3 scripts/create_task.py \
+  --source-type SSTC_FEATURE \
+  --source-reference https://github.com/West-wise/Server_State_Telemetry_Client/issues/123 \
+  --risk-level MEDIUM
+
+python3 scripts/validate_task_state.py state/tasks/sstc-feature-YYYYMMDD-0001.json
+python3 scripts/analyze_impact.py --task-file state/tasks/sstc-feature-YYYYMMDD-0001.json
+```
+
+SSTD 변경은 `analyze_impact.py`에 로컬로 clone된 SSTD 저장소와 source reference로 사용할 Git commit 또는 ref를 추가로 제공해야 한다.
+
+```bash
+python3 scripts/analyze_impact.py \
+  --task-file state/tasks/sstd-sync-YYYYMMDD-0001.json \
+  --source-repository ../Server_State_Telemetry_Demon
+```
+
+생성되는 task state, task log, impact report는 `state/tasks/` 아래에 남으며 Git에서 무시된다. 이는 저장소 산출물이 아닌 로컬 실행 증적이다. Impact report는 결정론적 Git 증적만 담고, Codex의 의미 분석은 다음 단계에서 추가한다.
