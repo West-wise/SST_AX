@@ -161,3 +161,12 @@ Draft PR + 구조화 로그 + Slack 일일 보고
 - 단일 task가 Draft PR까지 도달한 구조화된 증거가 존재함
 
 4/5 이상 평가는 서로 다른 입력 유형(SSTD 변경, SSTC 기능 요청)에서 반복 실행 성공률과 실패 복구 기록이 축적된 뒤에만 검토한다.
+
+## 2026-09-05 구현 갱신
+
+- `scripts/create_task.py`가 schema-valid 로컬 task state와 task log를 생성한다.
+- `scripts/validate_task_state.py`가 task state에 사용되는 JSON Schema 부분 집합을 검증한다.
+- `scripts/analyze_impact.py`가 SSTD 변경의 read-only Git 증적을 수집하거나 SSTC 기능 요청에 필요한 다음 분석 입력을 기록한다.
+- 잘못된 SSTC 작업 branch prefix 거부를 포함한 집중 통합 테스트로 경로를 검증했다.
+
+이는 **Memory** 구성 요소에 최소 실행 경로가 생겼다는 증적이다. 다만 대상 저장소 검증, checkpoint 복구, 권한 강제, Slack 전송, Codex 의미 분석, Draft PR 경로는 아직 실행되지 않았으므로 전체 운영 하네스 평가는 3/5로 올리지 않는다.
