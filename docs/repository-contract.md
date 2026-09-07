@@ -23,6 +23,7 @@ SST-AX/
 │  ├─ approval-workflow.md
 │  ├─ security-model.md
 │  ├─ repository-contract.md
+│  ├─ task-state.md
 │  ├─ operations.md
 │  └─ adr/
 ├─ contracts/

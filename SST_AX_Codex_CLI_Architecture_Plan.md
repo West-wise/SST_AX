@@ -16,9 +16,9 @@ SSTD 변경을 기준으로 SSTC의 영향을 분석하고, 승인된 범위에�
 | GitHub Actions Release 생성·검증 | 완료 |
 | Jenkins Release 배포·health check·rollback | 완료 |
 | 기존 SSTC의 SSTD 데이터 수신 | 정상 확인 |
-| SST-AX 별도 저장소 | 구성 결정, 구현 전 |
+| SST-AX 별도 저장소 | 문서·Task state CLI·상태 전이 기반 구현 |
 | Slack 승인 Gateway | 미구현 |
-| OCI AX Runner | 미구현 |
+| OCI AX Runner | Codex CLI 수동 실행 검증, 자동 Runner 미구현 |
 | SSTC 자동 동기화 | 미구현 |
 
 ## 확정 결정
@@ -69,6 +69,7 @@ SST-AX Controller
 - [보안 모델](docs/security-model.md)
 - [저장소·Contract·Agent 규칙](docs/repository-contract.md)
 - [운영 설계](docs/operations.md)
+- [Task 상태 규약](docs/task-state.md)
 
 ## 미결정 사항
 

@@ -28,9 +28,14 @@ Codex가 Slack이나 승인 응답을 기다리며 장시간 살아 있지 않�
 
 ```json
 {
-  "task_id": "sstc-sync-<timestamp>",
+  "task_id": "sstc-feature-<YYYYMMDD>-<sequence>",
+  "source_type": "SSTC_FEATURE",
+  "source_reference": "<issue-url>",
   "status": "WAITING_APPROVAL",
-  "source": "<sstd-commit-or-release>",
+  "risk_level": "HIGH",
+  "created_at": "<ISO-8601 timestamp>",
+  "updated_at": "<ISO-8601 timestamp>",
+  "attempt": 0,
   "branch": "ax/sstc-sync/<name>",
   "checkpoint_path": "state/checkpoints/<task-id>.json",
   "approval_reason": "UI_CHANGE"
@@ -86,20 +91,22 @@ Writer 실행 뒤에는 요구사항, unrelated change, regression, security, te
 
 ## 실패와 rollback
 
-실패를 숨기고 다음 단계로 진행하지 않는다. 다음 상태를 구분해 기록한다.
+실패를 숨기고 다음 단계로 진행하지 않는다. 상태의 전체 정의와 허용 전이는
+[`Task 상태 규약`](task-state.md)을 기준으로 한다.
 
-```text
-ANALYSIS_FAILED
-IMPLEMENTATION_FAILED
-BUILD_FAILED
-TEST_FAILED
-SECURITY_REVIEW_FAILED
-UI_APPROVAL_REQUIRED
-PROTOCOL_APPROVAL_REQUIRED
-READY_FOR_REVIEW
-```
+| 상태 | 의미 | 처리 | rollback 기준 |
+|---|---|---|---|
+| `ANALYSIS_FAILED` | 신뢰할 수 있는 영향 분석 실패 | 증적 보존 후 사람에게 에스컬레이션 | 대상 저장소 변경 없음 |
+| `IMPLEMENTATION_FAILED` | SSTC 구현 실패 | 마지막 checkpoint와 실패 출력을 보존 | 격리된 worktree만 정리 가능 |
+| `BUILD_FAILED` | 빌드 검증 실패 | Draft PR 생성 금지, 실패 증적 보존 | `main` rollback 없음 |
+| `TEST_FAILED` | 테스트 검증 실패 | Draft PR 생성 금지, 실패 증적 보존 | `main` rollback 없음 |
+| `SECURITY_REVIEW_FAILED` | 보안 검토 실패 | 작업 중단 및 사람 검토 요청 | 변경은 격리 상태 유지 |
+| `WAITING_APPROVAL` | 사람 승인 대기 | checkpoint와 승인 사유 저장 후 프로세스 종료 | 실행 변경 없음 |
+| `DEFERRED_RATE_LIMIT` | Codex 사용량 제한 | checkpoint 저장 후 reset 시각 이후 재개 | busy-retry 금지 |
+| `PROTOCOL_APPROVAL_REQUIRED` | SSTD protocol/contract 결정 필요 | SSTC 구현 중지 후 사람 결정 요청 | 실행 변경 없음 |
+| `READY_FOR_REVIEW` | 검증을 통과한 Draft PR 대기 | 사람 review로 전달 | 자동 rollback 없음 |
 
-자동화 변경은 branch/worktree에 격리한다. 실패 시 해당 worktree와 branch를 정리하며 `main`에 대한 rollback은 수행하지 않는다.
+자동화 변경은 branch/worktree에 격리한다. 실패 시 먼저 diff·로그·checkpoint를 보존한 뒤 해당 worktree와 branch를 정리할 수 있으며, `main`에 대한 rollback은 수행하지 않는다.
 
 ## SSTD Release와의 관계
 

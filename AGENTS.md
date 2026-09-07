@@ -20,6 +20,8 @@ SST-AX is the control plane for SSTD and SSTC automation. It creates tasks, pres
 RECEIVED → ANALYZING → WAITING_APPROVAL? → IMPLEMENTING → VALIDATING → READY_FOR_REVIEW
 ```
 
+상태의 의미와 허용 전이는 [`docs/task-state.md`](docs/task-state.md)를 기준으로 하며, 실제 Task state 형식은 `state/task-state.schema.json`으로 검증한다.
+
 - Create a task state before any repository write.
 - Use a separate worktree and branch for every write task.
 - Store a checkpoint before waiting for approval, stopping for a rate limit, or retrying after a recoverable failure.

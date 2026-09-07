@@ -67,9 +67,13 @@ UI 영향이 감지되면 기술 계층 수정 전에 작업을 중지하고 Sla
 RECEIVED → ANALYZING → WAITING_APPROVAL
                          ├→ REJECTED
                          └→ IMPLEMENTING → VALIDATING
-                                             ├→ FAILED
-                                             └→ READY_FOR_REVIEW → COMPLETED
+                                             ├→ BUILD_FAILED / TEST_FAILED / SECURITY_REVIEW_FAILED
+                                             └→ READY_FOR_REVIEW
 ```
+
+상태의 정의와 허용 전이는 [`Task 상태 규약`](task-state.md)을 기준으로 한다.
+`UI_APPROVAL_REQUIRED` 같은 별도 상태를 만들지 않고, UI 변경 승인은
+`WAITING_APPROVAL` 상태와 승인 사유 `UI_CHANGE`로 기록한다.
 
 ## 결과 보고서
 
