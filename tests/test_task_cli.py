@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -47,12 +48,42 @@ class TaskCliTest(unittest.TestCase):
             self.assertEqual(created.returncode, 0, created.stderr)
 
             task_path = task_directory / f"{task_id}.json"
+            rejected = self.run_script(
+                "update_task_state.py", "--task-file", str(task_path), "--status", "COMPLETED"
+            )
+            self.assertEqual(rejected.returncode, 1)
+            self.assertIn("Transition is not allowed", rejected.stderr)
+
+            analyzing = self.run_script(
+                "update_task_state.py", "--task-file", str(task_path), "--status", "ANALYZING"
+            )
+            self.assertEqual(analyzing.returncode, 0, analyzing.stderr)
             validated = self.run_script("validate_task_state.py", str(task_path))
             self.assertEqual(validated.returncode, 0, validated.stderr)
 
             analyzed = self.run_script("analyze_impact.py", "--task-file", str(task_path))
             self.assertEqual(analyzed.returncode, 0, analyzed.stderr)
             self.assertTrue((task_directory / f"{task_id}.impact.md").exists())
+
+            completed = self.run_script(
+                "update_task_state.py",
+                "--task-file",
+                str(task_path),
+                "--status",
+                "COMPLETED",
+                "--reason",
+                "No SSTD protocol or SSTC implementation impact found.",
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            task_state = json.loads(task_path.read_text(encoding="utf-8"))
+            task_log_path = task_directory / f"{task_id}.log.json"
+            task_log = json.loads(task_log_path.read_text(encoding="utf-8"))
+            self.assertEqual(task_state["status"], "COMPLETED")
+            self.assertEqual(
+                task_log["stop_reason"],
+                "No SSTD protocol or SSTC implementation impact found.",
+            )
+            self.assertEqual(len(task_log["state_transitions"]), 3)
 
     def test_rejects_invalid_branch(self) -> None:
         """A branch outside the reserved prefix cannot create task state."""

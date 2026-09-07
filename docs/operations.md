@@ -151,3 +151,22 @@ python3 scripts/analyze_impact.py \
 ```
 
 생성되는 task state, task log, impact report는 `state/tasks/` 아래에 남으며 Git에서 무시된다. 이는 저장소 산출물이 아닌 로컬 실행 증적이다. Impact report는 결정론적 Git 증적만 담고, Codex의 의미 분석은 다음 단계에서 추가한다.
+
+## Task 상태 전이
+
+`scripts/update_task_state.py`는 현재 상태에서 허용된 다음 상태로만 전이한다. 종료 상태, 승인 대기, 사용량 제한 대기는 `--reason`을 필수로 요구하며, 전이 이력과 종료 사유는 짝을 이루는 task log에 기록한다.
+
+SSTD 변경의 분석을 시작하고, SSTC 영향이 없다는 결정론적 또는 승인된 분석 결과로 종료하는 예시는 다음과 같다.
+
+```bash
+python3 scripts/update_task_state.py \
+  --task-file state/tasks/sstd-sync-YYYYMMDD-0001.json \
+  --status ANALYZING
+
+python3 scripts/update_task_state.py \
+  --task-file state/tasks/sstd-sync-YYYYMMDD-0001.json \
+  --status COMPLETED \
+  --reason "SSTC 영향 없음"
+```
+
+`RECEIVED → COMPLETED`처럼 단계를 건너뛰는 전이와 종료 상태에서의 재개는 거부된다.

@@ -106,6 +106,14 @@ def build_task_log(task_state: dict[str, Any], now: str) -> dict[str, Any]:
             "policy_version": revision,
             "guide_version": revision,
             "commands": [],
+            "state_transitions": [
+                {
+                    "from_status": None,
+                    "to_status": task_state["status"],
+                    "occurred_at": now,
+                    "reason": "task created",
+                }
+            ],
             "unresolved_issues": [],
         }
     )
