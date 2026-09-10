@@ -91,7 +91,7 @@ Writer 실행 뒤에는 요구사항, unrelated change, regression, security, te
 
 ## 실패와 rollback
 
-실패를 숨기고 다음 단계로 진행하지 않는다. 상태의 전체 정의와 허용 전이는
+실패를 숨기고 다음 단계로 진행하지 않는다. 상태의 전체 정의와 허용되는 상태 전이(작업 상태 변경)는
 [`Task 상태 규약`](task-state.md)을 기준으로 한다.
 
 | 상태 | 의미 | 처리 | rollback 기준 |
@@ -161,6 +161,9 @@ python3 scripts/analyze_impact.py \
 
 ## Task 상태 전이
 
+상태 순서 검사 외에 [실행 조건](task-state.md)을 적용한다. 현재 승인 Gateway와
+검증 결과 생성기가 없으므로 승인 필수 구현 및 `READY_FOR_REVIEW`는 차단된다.
+
 `scripts/update_task_state.py`는 현재 상태에서 허용된 다음 상태로만 전이한다. 종료 상태, 승인 대기, 사용량 제한 대기는 `--reason`을 필수로 요구하며, 전이 이력과 종료 사유는 짝을 이루는 task log에 기록한다.
 
 SSTD 변경의 분석을 시작하고, SSTC 영향이 없다는 결정론적 또는 승인된 분석 결과로 종료하는 예시는 다음과 같다.
@@ -177,3 +180,39 @@ python3 scripts/update_task_state.py \
 ```
 
 `RECEIVED → COMPLETED`처럼 단계를 건너뛰는 전이와 종료 상태에서의 재개는 거부된다.
+
+## 로컬 checkpoint와 저장 복구
+
+사용량 제한 시 실제 확인한 reset 시각을 한국 표준시(KST, UTC+09:00)로 환산해
+지정한다. 아래는 한국 시각 2026년 9월 11일 오후 2시를 나타내는 예시이며,
+끝의 `+09:00`은 UTC보다 9시간 빠른 한국 시각임을 뜻한다.
+
+```bash
+python3 scripts/update_task_state.py \
+  --task-file state/tasks/sstc-feature-YYYYMMDD-0001.json \
+  --status DEFERRED_RATE_LIMIT --reason "Codex usage unavailable" \
+  --deferred-until 2026-09-11T14:00:00+09:00
+```
+
+checkpoint는 `state/checkpoints/<task-id>.json`에 저장하며 입력 reference,
+대기 상태, 전체 전이 로그, 중단했던 단계를 담는다. 커스텀 task 디렉터리에서는
+그 부모의 `checkpoints/`에 저장한다. reset 이후 기존 `--status` 명령으로
+중단했던 단계에 재진입하면 checkpoint 일치와 시각을 검사한다.
+
+Task 생성·전이는 OS 파일 잠금으로 같은 Task의 동시 쓰기를 거부한다.
+state/log를 바꾸기 전에 `<task-id>.pending.json`에 변경할 쌍을 기록한다.
+저장 중단으로 pending 파일이 남으면 추가 전이를 거부하므로 다음으로 복구한다.
+
+```bash
+python3 scripts/update_task_state.py \
+  --task-file state/tasks/sstc-feature-YYYYMMDD-0001.json --recover
+```
+
+복구는 pending의 state/log를 완성하는 roll-forward이며, 새 전이를 추가하거나
+Codex를 실행하지 않는다. 반복 실행해도 전이 로그가 늘어나지 않는다.
+checkpoint 불일치·손상은 임의 복원하지 않고 중단한다. checkpoint 저장 직후
+pending 작성 전에 종료됐다면 기존 state/log가 유지되며 전이를 재요청할 수 있다.
+
+현재 보장 범위는 로컬 Task 메타데이터와 프로세스 중단 복구다. SSTC Git revision,
+diff, worktree 복원, 운영체제 장애·전원 손실 내구성, Slack 승인자 인증은 미검증이다.
+상태 저장 영역은 Controller 전용으로 관리해야 하며 Worker 쓰기 권한에서 제외한다.

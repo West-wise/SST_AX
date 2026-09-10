@@ -2,9 +2,13 @@
 
 이 문서는 SST-AX Task 상태의 사람이 읽는 기준 문서다. 기계 검증은
 [`state/task-state.schema.json`](../state/task-state.schema.json)이 담당하고,
-실제 허용 전이는
+실제 허용되는 상태 전이(작업 상태 변경)는
 [`scripts/update_task_state.py`](../scripts/update_task_state.py)의
 `ALLOWED_TRANSITIONS`가 담당한다. 세 기준은 함께 변경해야 한다.
+
+예를 들어 `RECEIVED → ANALYZING`은 접수된 작업이 분석 중으로 바뀌는 하나의
+상태 전이다. 전이 순서는 어떤 상태로 이동할 수 있는지, 전이 조건은 이동 전에
+승인·검증 등 어떤 근거가 필요한지를 뜻한다.
 
 ## 상태 흐름
 
@@ -81,6 +85,27 @@ stateDiagram-v2
 `from_status`, `to_status`, 시각, 사유를 기록한다.
 
 ## 위험도와 상태의 관계
+
+### 로컬 CLI 전이 조건 (2026-09-10)
+
+허용 전이 표는 필요조건이며, 다음 실행 조건도 충족해야 한다.
+
+- `IMPLEMENTING`: CRITICAL은 금지한다. HIGH, `approval_reason`이 있는 작업,
+  `WAITING_APPROVAL`에서의 진행은 검증된 Slack 승인이 필요하다. Gateway가
+  미구현이므로 현재 CLI는 이 경로를 거부한다. 임의 승인 JSON은 받지 않는다.
+- `READY_FOR_REVIEW`: 신뢰 가능한 검증 실행 결과와 Draft PR 생성 결과를
+  기록하는 구성 요소가 아직 없으므로 현재 CLI는 전환을 거부한다.
+- `WAITING_APPROVAL`, `DEFERRED_RATE_LIMIT`: state/log snapshot과 재개 단계를
+  checkpoint에 먼저 저장한다. 사용량 제한은 timezone이 있는 관측된 reset 시각을
+  `--deferred-until`로 지정한다. 시각을 모르면 추정해서 실행하지 않는다.
+- 대기 상태에서 진행할 때 checkpoint가 현재 state/log와 일치해야 한다.
+  사용량 제한 후에는 reset 시각이 지난 뒤 checkpoint의 단계로만 재개한다.
+  `REJECTED`는 reset을 기다리지 않고 종료할 수 있다.
+- state/log의 task ID, 입력 출처, 상태가 다르면 진행하지 않는다.
+
+이는 CLI의 진행 조건이며 OS 권한 격리를 대신하지 않는다. 로컬 상태 파일을
+직접 수정할 수 있는 주체를 방어하는 인증 장치는 아니다. UI/protocol 등의
+자동 분류도 아직 없으며 입력 위험도·승인 사유가 정확해야 한다.
 
 위험도는 현재 상태와 별개의 판단 값이다. 위험도가 높다고 상태를 임의로
 변경하지 않으며, 정책에 따라 승인 대기 또는 작업 중단으로 전이한다.

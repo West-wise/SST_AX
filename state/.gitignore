@@ -1,4 +1,6 @@
 *.json
+*.lock
+.task-*
 !task-state.schema.json
 checkpoints/*
 !checkpoints/.gitkeep
