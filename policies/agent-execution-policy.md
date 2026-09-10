@@ -33,6 +33,8 @@
 
 ## Failure Handling
 
+상태의 의미와 허용 전이는 [`Task 상태 규약`](../docs/task-state.md)을 기준으로 한다.
+
 ```text
 recoverable failure → checkpoint → retry within limit
 usage limit → checkpoint → DEFERRED_RATE_LIMIT

@@ -79,6 +79,7 @@ SST-AX/
 - [승인 및 변경 영향 Workflow](docs/approval-workflow.md)
 - [보안 모델](docs/security-model.md)
 - [저장소·Contract·Agent 운영 규칙](docs/repository-contract.md)
+- [Task 상태 규약](docs/task-state.md)
 - [운영 설계](docs/operations.md)
 
 ## 현재 상태

@@ -17,6 +17,7 @@
       "artifact_paths": []
     }
   ],
+  "state_transitions": [],
   "approvals": [],
   "checkpoints": [],
   "draft_pr_url": null,

@@ -61,6 +61,8 @@ Slack 운영 채널 게시
 
 ## 설계 원칙
 
+Task 상태는 [`Task 상태 규약`](task-state.md)을 단일 설명 기준으로 사용한다. JSON Schema는 기계 검증 계약이고, 상태 전이 구현은 해당 규약과 함께 변경한다.
+
 1. **Human ownership:** 프로토콜·보안·UI 정책·merge·release·production 배포는 사람이 결정한다.
 2. **Bounded autonomy:** AI의 실행 권한보다 금지 영역을 먼저 정의한다.
 3. **Single source of truth:** machine-readable contract, ADR, 요구사항, 코드 순서로 참조한다.
