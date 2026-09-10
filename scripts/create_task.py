@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from validate_task_state import DEFAULT_SCHEMA_PATH, load_json, validate_task_state
+from task_storage import companion, save_pair, task_lock
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TASK_DIRECTORY = REPOSITORY_ROOT / "state" / "tasks"
@@ -150,8 +151,15 @@ def main() -> int:
         return 1
 
     args.task_directory.mkdir(parents=True, exist_ok=True)
-    task_path.write_text(json.dumps(task_state, indent=2) + "\n", encoding="utf-8")
-    log_path.write_text(json.dumps(build_task_log(task_state, now), indent=2) + "\n", encoding="utf-8")
+    try:
+        with task_lock(task_path):
+            if task_path.exists() or log_path.exists() or companion(task_path, "pending").exists():
+                print(f"Task already exists or needs recovery: {task_id}", file=sys.stderr)
+                return 1
+            save_pair(task_path, task_state, build_task_log(task_state, now))
+    except (OSError, ValueError) as error:
+        print(f"Task creation failed: {error}", file=sys.stderr)
+        return 2
     print(f"TASK_ID={task_id}")
     print(f"TASK_STATE={task_path}")
     print(f"TASK_LOG={log_path}")

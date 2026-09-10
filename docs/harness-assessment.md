@@ -1,5 +1,17 @@
 # SST-AX Harness Assessment
 
+## 2026-09-10 상태·복구 보강
+
+기존 아래 평가는 초기 기준선이다. 현재 로컬 CLI는 위험도·승인 사유에 따른
+구현 진입 차단, 승인 Gateway/검증 실행기 미구현 시 진행 거부, 대기 checkpoint,
+reset 시각·재개 단계 검사, OS Task 잠금, journal 기반 state/log 복구를 구현했다.
+외부 서비스 없이 승인 우회·검증 증거 누락·checkpoint 누락·동시 쓰기 거부와
+저장 실패 주입·반복 복구를 테스트한다.
+
+이는 Task 메타데이터의 복구 증거이며 SSTC 변경 복구나 Slack 인증 증거는 아니다.
+전체 운영 성숙도 3/5는 아직 충족하지 않는다. 실제 Sensor, 실행 시간·재시도 한도,
+Worker 권한 격리, 단일 Task의 Draft PR 완주 검증이 남아 있다.
+
 > **평가 기준일:** 2026-09-04
 > **목적:** SST-AX 하네스의 현재 성숙도를 기록하고, 외부 평가 전에 필요한 증거를 명확히 한다.
 > **참고 프레임워크:** [Harness Engineering 6-Layer Guide](https://theaxlabs.com/blog/harness-engineering-6-layer-guide)
