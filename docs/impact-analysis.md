@@ -1,0 +1,98 @@
+# 영향 분석 결과 검증
+
+이 기능은 AI 분석 결과를 로컬 입력과 비교하는 검증기다. Codex를 호출하거나
+Slack 승인을 처리하지 않으며, Task 상태·위험도·승인 정보도 변경하지 않는다.
+
+## 파일과 역할
+
+| 파일 | 역할 |
+|---|---|
+| [요구사항](../specs/impact-result.spec.md) | 공통 범위·수용 기준·분석 한계 |
+| [결과 schema](../contracts/impact-analysis.schema.json) | 루트는 결과 형식, `$defs.manifest`는 입력 manifest 형식 |
+| [검증 CLI](../scripts/validate_impact_result.py) | 입력 로드, 오류 코드와 판정 출력 |
+| [검증 규칙](../scripts/impact_validation.py) | 중첩 형식·입력 결합·명시적 모순 검사 |
+| [테스트 fixture](../tests/fixtures/impact) | 실제 서비스 정보가 아닌 합성 Task·manifest·결과 묶음 |
+
+## 사용법
+
+운영자/Controller가 준비한 Task와 manifest, 별도로 받은 분석 결과가 필요하다.
+다음 경로는 사용자가 준비한 파일의 예시이며 자동으로 생성되지 않는다.
+
+```bash
+python3 scripts/validate_impact_result.py \
+  --task-file state/tasks/<task-id>.json \
+  --manifest-file state/tasks/<task-id>.manifest.json \
+  --result-file state/tasks/<task-id>.analysis.json
+```
+
+규약에 맞는 결과는 다음처럼 출력한다.
+
+```text
+VALID_IMPACT=UNDETERMINED
+AUTHORIZATION=NONE
+```
+
+| 판정/종료 코드 | 의미 |
+|---|---|
+| `REQUIRED`, 0 | 수정 필요라는 결과가 규약에 맞음; 구현 허가 아님 |
+| `NOT_REQUIRED`, 0 | 수정 불필요라는 결과가 규약에 맞음; 자동 완료 허가 아님 |
+| `UNDETERMINED`, 0 | 질문·누락 정보를 포함한 판단 유보가 규약에 맞음 |
+| 1 | 형식 오류·중복 key·입력 불일치·증적/승인 사유 모순 |
+| 2 | 파일 읽기·JSON 파싱·자원 제한·CLI 사용 오류 |
+| 130 | 검증 중 사용자 중단 |
+
+성공 결과는 stdout, 오류 코드와 필드 위치는 stderr로 출력한다. 알 수 없는 key·값과
+입력 원문을 오류 메시지에 복사하지 않는다. 실패 결과를 자동 보정하거나 재시도하지 않는다.
+
+## 신뢰할 입력 준비
+
+manifest를 결과 작성자에게 자유롭게 수정하게 해서는 안 된다. Task와 manifest를
+Controller가 관리하고 Worker 쓰기 영역에서 분리해야 한다. 초기 구현에는 이 권한 격리나
+manifest 자동 수집기가 포함되지 않으므로, 검증기의 성공을 인증 증명으로 사용하지 않는다.
+
+- commit은 소문자 40자리 Git SHA로 고정한다. SHA-256 Git 저장소 형식은 현재 지원하지 않는다.
+- SSTD는 기준·대상 commit과 SSTC commit을 기록한다. 최초 commit만 기준을 null로 둔다.
+- SSTC 요청은 SSTC commit과 요청 본문 UTF-8 snapshot의 SHA-256을 기록한다. URL만으로 본문 동일성을 보장할 수 없다.
+- 해당 유형에서 사용하지 않는 context 값은 null이다. 필수 revision/snapshot이 미확보이면 null로 기록하고 판단을 유보한다.
+- 필수 증적은 SSTD의 `source_diff` 또는 SSTC의 `request`, 공통 `sstc_context`·`target_instructions`다. 이 항목들은 `required: true`로 기록한다.
+- 증적별로 출처·revision·내용 hash·경로·누락/잘림 여부를 기록한다. 누락 증적은 `missing: true`, `content_sha256: null`이다. 요청 증적의 내용 hash는 요청 snapshot hash와 같아야 한다.
+- 증적 경로는 `/`를 구분자로 하는 저장소 상대 경로다. 요청과 집계 diff는 path가 null일 수 있다. 삭제 파일은 기준 revision에 연결한다.
+
+검증기는 manifest에 기록된 참조와 hash의 일관성을 검사하지만 실제 저장소·증적 본문을
+열어 hash를 재계산하지 않는다. 실제 수집기의 정확성과 보호는 별도 검증 대상이다.
+기존 `analyze_impact.py`의 Markdown은 manifest를 대신하지 않으며, 파일 목록·stat만으로
+의미 분석에 충분한 증적이 준비되었다고 간주하지 않는다.
+
+## 검증 범위와 한계
+
+중복 key, 중첩 필수/추가 필드, enum/type, Task·입력 식별, 증적 참조, 명시적 모순을
+검사한다. JSON당 최대 1 MiB, 컨테이너 중첩 깊이 32, 규약 배열당 최대 256개다.
+정수 토큰은 최대 4,300자리로 제한해 Python 버전별 기본 제한 차이를 없앤다.
+JSON Schema 전체 구현은 아니며 저장소 schema에서 사용하는 부분집합과 별도 교차 규칙을
+적용한다. 일반 JSON Schema 검사만으로는 교차 규칙까지 검증되지 않는다.
+
+필수 증적의 누락·잘림, UNKNOWN 영향, 미해결 질문은 확정 결론을 막는다.
+UI/UX·protocol·dependency·Android permission·파괴적 작업·SSTD 추가 변경과 HIGH/CRITICAL
+위험도에는 대응 사유가 필요하다. 이는 사유 누락을 잡는 검사이지 UI 영향의 진위를
+자동 판정하는 기능이 아니다. AI가 잘못된 ABSENT와 그럴듯한 근거를 제출할 가능성은 남는다.
+
+## 로컬 검증과 다음 단계
+
+```bash
+python3 -m unittest discover -s tests -p 'test_impact_validation.py' -v
+python3 -m unittest discover -s tests -v
+```
+
+fixture는 `task`, `manifest`, `result`를 담는 테스트용 묶음이다. 테스트가 각각을
+임시 파일로 분리해 CLI를 호출하므로 네트워크·실제 계정·SSTD/SSTC clone이 필요 없다.
+
+2026-09-12 검증: Windows Python 3.13.2와 로컬 WSL Ubuntu 22.04 Python 3.10.12에서
+각각 전체 51개(영향 검증 38개 + 기존 13개)가 통과했다. OCI 실서버 재검증은 별도다.
+잘못된 Task URL의 오류 원문 노출, 정수 파싱 제한, 배열 상한 초과 처리, SHA 끝 개행에
+대한 독립 검토 지적을 수정하고 회귀 사례를 포함했다. Python 버전에 따라 다른 bracketed
+host 처리는 새 검증기 경계에서 일관되게 검사하며 기존 Task CLI는 바꾸지 않았다.
+
+다음 실제 분석 단계에서는 수집기가 입력을 고정하고, read-only Codex 결과를 이 검증기로
+검사한 뒤 사람이 정한 평가 사례와 비교해야 한다. Slack Gateway·자동 상태 변경·SSTC
+수정·Draft PR 자동 생성은 아직 이 검증기에 연결되지 않는다. 사용량 리셋 대기와
+checkpoint 운영은 기존 [운영 설계](operations.md)를 따른다.

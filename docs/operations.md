@@ -135,6 +135,10 @@ SST-AX는 SSTD Release 또는 승인된 source commit을 입력으로 받아 SST
 - 보고 지연 시간과 재시도 횟수
 # 로컬 Task 입력 (구현 완료)
 
+AI 결과의 별도 검증은 [영향 분석 결과 검증](impact-analysis.md)을 따른다.
+두 Handler 공통 규약·로컬 검증 CLI가 있으며, 기존 증적 Markdown을 manifest로
+간주하거나 검증 성공만으로 상태를 변경하지 않는다.
+
 첫 번째 실행 가능 SST-AX 경로는 로컬 전용이다. Codex, Slack, GitHub를 호출하지 않으며 SSTD/SSTC 대상 저장소에도 쓰지 않는다.
 
 SSTC 기능 요청 Task를 생성하고 상태를 검증한 뒤 초기 read-only 증적 보고서를 생성한다.
