@@ -46,6 +46,9 @@ Codex가 Slack이나 승인 응답을 기다리며 장시간 살아 있지 않�
 
 ## Slack 일일 보고 운영
 
+승인 버튼의 OCI 연결 실험은 [Slack 빠른 시작](slack-quickstart.md)을 따른다.
+아래 일일 보고는 아직 별도 구현이 필요한 운영 계획이다.
+
 Report Generator는 Controller의 task state, 실행 로그의 요약 정보, GitHub PR 상태를 집계해 지정된 시간에 Slack 운영 채널로 전송한다. 보고서에서 `SSTD Change Handler` 작업과 `SSTC Feature Handler` 작업을 구분한다. 기본 시간대는 `Asia/Seoul`로 하되 구현 시 설정값으로 명시한다.
 
 권장 보고 형식:
@@ -165,8 +168,8 @@ python3 scripts/analyze_impact.py \
 
 ## Task 상태 전이
 
-상태 순서 검사 외에 [실행 조건](task-state.md)을 적용한다. 현재 승인 Gateway와
-검증 결과 생성기가 없으므로 승인 필수 구현 및 `READY_FOR_REVIEW`는 차단된다.
+상태 순서 검사 외에 [실행 조건](task-state.md)을 적용한다. 승인 필수 구현은
+Slack Gateway를 통해서만 진행한다. 검증 결과 생성기가 없어 `READY_FOR_REVIEW`는 차단된다.
 
 `scripts/update_task_state.py`는 현재 상태에서 허용된 다음 상태로만 전이한다. 종료 상태, 승인 대기, 사용량 제한 대기는 `--reason`을 필수로 요구하며, 전이 이력과 종료 사유는 짝을 이루는 task log에 기록한다.
 
@@ -218,5 +221,6 @@ checkpoint 불일치·손상은 임의 복원하지 않고 중단한다. checkpo
 pending 작성 전에 종료됐다면 기존 state/log가 유지되며 전이를 재요청할 수 있다.
 
 현재 보장 범위는 로컬 Task 메타데이터와 프로세스 중단 복구다. SSTC Git revision,
-diff, worktree 복원, 운영체제 장애·전원 손실 내구성, Slack 승인자 인증은 미검증이다.
+diff, worktree 복원, 운영체제 장애·전원 손실 내구성, 실제 Slack·OCI 연결은 미검증이다.
+Slack 승인자·메시지·checkpoint 검증은 가짜 응답을 사용한 로컬 테스트로 확인한다.
 상태 저장 영역은 Controller 전용으로 관리해야 하며 Worker 쓰기 권한에서 제외한다.

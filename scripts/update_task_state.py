@@ -127,7 +127,7 @@ def update(args: argparse.Namespace) -> int:
             raise ValueError("CRITICAL tasks cannot be implemented automatically")
         if (task_state["risk_level"] == "HIGH" or task_state.get("approval_reason")
                 or current_status == "WAITING_APPROVAL"):
-            raise ValueError("Verified Slack approval required; approval gateway is not implemented")
+            raise ValueError("Verified Slack approval required; use the authenticated Slack gateway")
     if args.status == "READY_FOR_REVIEW":
         raise ValueError("Trusted validation evidence and Draft PR receipt required; producers are not implemented")
 
