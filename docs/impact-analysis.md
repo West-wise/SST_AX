@@ -46,9 +46,12 @@ AUTHORIZATION=NONE
 
 ## 신뢰할 입력 준비
 
+로컬 저장소·요청 snapshot에서 입력을 준비하는 방법은 [입력 수집](impact-inputs.md)을
+따른다. 수집기는 본문과 해시를 생성하지만 Worker 권한 격리와 의미적 충분성을 보장하지 않는다.
+
 manifest를 결과 작성자에게 자유롭게 수정하게 해서는 안 된다. Task와 manifest를
 Controller가 관리하고 Worker 쓰기 영역에서 분리해야 한다. 초기 구현에는 이 권한 격리나
-manifest 자동 수집기가 포함되지 않으므로, 검증기의 성공을 인증 증명으로 사용하지 않는다.
+Worker 실행 연결이 포함되지 않으므로, 검증기의 성공을 인증 증명으로 사용하지 않는다.
 
 - commit은 소문자 40자리 Git SHA로 고정한다. SHA-256 Git 저장소 형식은 현재 지원하지 않는다.
 - SSTD는 기준·대상 commit과 SSTC commit을 기록한다. 최초 commit만 기준을 null로 둔다.
