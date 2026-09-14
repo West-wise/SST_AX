@@ -1,0 +1,352 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SST-AX Impact Analysis Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_id",
+    "source_type",
+    "input_context",
+    "change_required",
+    "summary",
+    "risk_level",
+    "evidence",
+    "impacts",
+    "approval_reasons",
+    "unresolved_questions"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^(sstd-sync|sstc-feature)-[0-9]{8}-[0-9]{4}(?![\\s\\S])"
+    },
+    "source_type": {
+      "type": "string",
+      "enum": [
+        "SSTD_CHANGE",
+        "SSTC_FEATURE"
+      ]
+    },
+    "input_context": {
+      "$ref": "#/$defs/input_context"
+    },
+    "change_required": {
+      "type": "string",
+      "enum": [
+        "REQUIRED",
+        "NOT_REQUIRED",
+        "UNDETERMINED"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": [
+        "NONE",
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+        "CRITICAL"
+      ]
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "evidence_id",
+          "reason"
+        ],
+        "properties": {
+          "evidence_id": {
+            "$ref": "#/$defs/evidence_id"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
+        }
+      },
+      "minItems": 0,
+      "maxItems": 256
+    },
+    "impacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ui_ux",
+        "protocol_contract",
+        "dependency",
+        "android_permission",
+        "destructive_action",
+        "sstd_change_required"
+      ],
+      "properties": {
+        "ui_ux": {
+          "$ref": "#/$defs/impact"
+        },
+        "protocol_contract": {
+          "$ref": "#/$defs/impact"
+        },
+        "dependency": {
+          "$ref": "#/$defs/impact"
+        },
+        "android_permission": {
+          "$ref": "#/$defs/impact"
+        },
+        "destructive_action": {
+          "$ref": "#/$defs/impact"
+        },
+        "sstd_change_required": {
+          "$ref": "#/$defs/impact"
+        }
+      }
+    },
+    "approval_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "UI_CHANGE",
+          "PROTOCOL_CHANGE",
+          "DEPENDENCY_CHANGE",
+          "ANDROID_PERMISSION_CHANGE",
+          "DESTRUCTIVE_ACTION",
+          "SSTD_CHANGE_REQUIRED",
+          "HIGH_RISK",
+          "CRITICAL_RISK"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 256,
+      "uniqueItems": true
+    },
+    "unresolved_questions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "minItems": 0,
+      "maxItems": 256,
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "input_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_reference",
+        "sstc_revision",
+        "sstd_base_revision",
+        "sstd_revision",
+        "request_sha256"
+      ],
+      "properties": {
+        "source_reference": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "sstc_revision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}(?![\\s\\S])"
+        },
+        "sstd_base_revision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}(?![\\s\\S])"
+        },
+        "sstd_revision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}(?![\\s\\S])"
+        },
+        "request_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+        }
+      }
+    },
+    "evidence_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}(?![\\s\\S])"
+    },
+    "impact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reason",
+        "evidence_ids"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "PRESENT",
+            "ABSENT",
+            "UNKNOWN"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence_id"
+          },
+          "minItems": 0,
+          "maxItems": 256,
+          "uniqueItems": true
+        }
+      }
+    },
+    "evidence_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_id",
+        "source",
+        "revision",
+        "request_sha256",
+        "path",
+        "kind",
+        "content_sha256",
+        "required",
+        "missing",
+        "truncated"
+      ],
+      "properties": {
+        "evidence_id": {
+          "$ref": "#/$defs/evidence_id"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "SSTD",
+            "SSTC",
+            "REQUEST"
+          ]
+        },
+        "revision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}(?![\\s\\S])"
+        },
+        "request_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "source_diff",
+            "request",
+            "sstc_context",
+            "target_instructions",
+            "supporting"
+          ]
+        },
+        "content_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "missing": {
+          "type": "boolean"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "source_type",
+        "input_context",
+        "evidence"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "enum": [
+            "1.0"
+          ]
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^(sstd-sync|sstc-feature)-[0-9]{8}-[0-9]{4}(?![\\s\\S])"
+        },
+        "source_type": {
+          "type": "string",
+          "enum": [
+            "SSTD_CHANGE",
+            "SSTC_FEATURE"
+          ]
+        },
+        "input_context": {
+          "$ref": "#/$defs/input_context"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence_item"
+          },
+          "minItems": 0,
+          "maxItems": 256
+        }
+      }
+    }
+  }
+}

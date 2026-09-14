@@ -1,0 +1,150 @@
+{
+  "task": {
+    "task_id": "sstd-sync-20260912-0001",
+    "source_type": "SSTD_CHANGE",
+    "source_reference": "synthetic-release-v2",
+    "status": "ANALYZING",
+    "risk_level": "HIGH",
+    "approval_reason": "Existing review requirement must be preserved.",
+    "created_at": "2026-09-12T00:00:00Z",
+    "updated_at": "2026-09-12T00:00:00Z",
+    "attempt": 0
+  },
+  "manifest": {
+    "schema_version": "1.0",
+    "task_id": "sstd-sync-20260912-0001",
+    "source_type": "SSTD_CHANGE",
+    "input_context": {
+      "source_reference": "synthetic-release-v2",
+      "sstc_revision": "cccccccccccccccccccccccccccccccccccccccc",
+      "sstd_base_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sstd_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "request_sha256": null
+    },
+    "evidence": [
+      {
+        "evidence_id": "source",
+        "source": "SSTD",
+        "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "request_sha256": null,
+        "path": null,
+        "kind": "source_diff",
+        "content_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "required": true,
+        "missing": false,
+        "truncated": false
+      },
+      {
+        "evidence_id": "client",
+        "source": "SSTC",
+        "revision": "cccccccccccccccccccccccccccccccccccccccc",
+        "request_sha256": null,
+        "path": "app/src/main/SyntheticClient.kt",
+        "kind": "sstc_context",
+        "content_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "required": true,
+        "missing": false,
+        "truncated": false
+      },
+      {
+        "evidence_id": "instructions",
+        "source": "SSTC",
+        "revision": "cccccccccccccccccccccccccccccccccccccccc",
+        "request_sha256": null,
+        "path": "AGENTS.md",
+        "kind": "target_instructions",
+        "content_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "required": true,
+        "missing": false,
+        "truncated": false
+      }
+    ]
+  },
+  "result": {
+    "schema_version": "1.0",
+    "task_id": "sstd-sync-20260912-0001",
+    "source_type": "SSTD_CHANGE",
+    "input_context": {
+      "source_reference": "synthetic-release-v2",
+      "sstc_revision": "cccccccccccccccccccccccccccccccccccccccc",
+      "sstd_base_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sstd_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "request_sha256": null
+    },
+    "change_required": "UNDETERMINED",
+    "summary": "Synthetic field description is ambiguous; compatibility cannot yet be decided.",
+    "risk_level": "LOW",
+    "evidence": [
+      {
+        "evidence_id": "source",
+        "reason": "Reviewed synthetic source_diff input."
+      },
+      {
+        "evidence_id": "client",
+        "reason": "Reviewed synthetic sstc_context input."
+      },
+      {
+        "evidence_id": "instructions",
+        "reason": "Reviewed synthetic target_instructions input."
+      }
+    ],
+    "impacts": {
+      "ui_ux": {
+        "status": "ABSENT",
+        "reason": "The synthetic inputs show no ui_ux change.",
+        "evidence_ids": [
+          "source",
+          "client",
+          "instructions"
+        ]
+      },
+      "protocol_contract": {
+        "status": "UNKNOWN",
+        "reason": "The synthetic input does not settle this impact.",
+        "evidence_ids": [
+          "source"
+        ]
+      },
+      "dependency": {
+        "status": "ABSENT",
+        "reason": "The synthetic inputs show no dependency change.",
+        "evidence_ids": [
+          "source",
+          "client",
+          "instructions"
+        ]
+      },
+      "android_permission": {
+        "status": "ABSENT",
+        "reason": "The synthetic inputs show no android_permission change.",
+        "evidence_ids": [
+          "source",
+          "client",
+          "instructions"
+        ]
+      },
+      "destructive_action": {
+        "status": "ABSENT",
+        "reason": "The synthetic inputs show no destructive_action change.",
+        "evidence_ids": [
+          "source",
+          "client",
+          "instructions"
+        ]
+      },
+      "sstd_change_required": {
+        "status": "ABSENT",
+        "reason": "The synthetic inputs show no sstd_change_required change.",
+        "evidence_ids": [
+          "source",
+          "client",
+          "instructions"
+        ]
+      }
+    },
+    "approval_reasons": [],
+    "unresolved_questions": [
+      "Which behavior is intended by the ambiguous synthetic input?"
+    ]
+  }
+}
