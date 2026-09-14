@@ -91,8 +91,9 @@ stateDiagram-v2
 허용 전이 표는 필요조건이며, 다음 실행 조건도 충족해야 한다.
 
 - `IMPLEMENTING`: CRITICAL은 금지한다. HIGH, `approval_reason`이 있는 작업,
-  `WAITING_APPROVAL`에서의 진행은 검증된 Slack 승인이 필요하다. Gateway가
-  미구현이므로 현재 CLI는 이 경로를 거부한다. 임의 승인 JSON은 받지 않는다.
+  `WAITING_APPROVAL`에서의 진행은 검증된 Slack 승인이 필요하다. 일반 상태 CLI는
+  이 경로를 거부하며 [Slack Gateway](slack-quickstart.md)만 인증된 응답을 적용한다.
+  임의 승인 JSON은 받지 않는다.
 - `READY_FOR_REVIEW`: 신뢰 가능한 검증 실행 결과와 Draft PR 생성 결과를
   기록하는 구성 요소가 아직 없으므로 현재 CLI는 전환을 거부한다.
 - `WAITING_APPROVAL`, `DEFERRED_RATE_LIMIT`: state/log snapshot과 재개 단계를
