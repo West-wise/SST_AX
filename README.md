@@ -11,16 +11,22 @@ SSTD의 프로토콜이나 데이터 모델이 변경되었을 때 SSTC에 미�
 - 모든 자동화 변경은 별도 branch와 Pull Request로 검토 가능하게 남깁니다.
 - 승인 대기가 필요한 작업은 checkpoint로 상태를 저장하고, 프로세스를 종료한 뒤 승인 결과에 따라 재개합니다.
 
-## 현재 자동화 범위
+## 구현 범위와 목표
 
-현재 목표 범위는 **SSTC Draft PR 생성까지**입니다.
+변경 입력 수집, 분석 결과 검증, Task 상태 복구, Slack 승인 Gateway와
+Codex 읽기 전용 분석 CLI를 구현했습니다. 분석 CLI는 입력 증적의 해시를 확인하고
+결과 JSON을 검증하며, Task 로그에 Codex 세션 ID를 연결합니다.
+승인 후에는 checkpoint·승인 기록·입력·결과를 대조한 뒤 같은 세션을 읽기 전용으로 재개합니다.
+
+최종 목표는 **SSTC Draft PR 생성까지**입니다. 아래는 목표 흐름이며,
+SSTC 소스 수정·build/test/lint·Draft PR 자동 생성 연결은 후속 단계입니다.
 
 ```text
 SSTD main/Release 또는 SSTC Issue
         ↓
 SSTD Change Handler / SSTC Feature Handler
         ↓
-SST-AX 변경 영향·요구사항 분석
+입력 수집 → Codex 읽기 전용 분석 → 결과 JSON 검증
         ↓
 필요 시 Slack 승인
         ↓
@@ -47,30 +53,32 @@ SST-Workspace/
 
 SST-AX는 SSTD나 SSTC의 소스 코드를 복제하는 저장소가 아니라, 두 저장소 사이의 자동화 정책과 연결 계약을 관리하는 control-plane 저장소입니다.
 
-## 개발 예정 구성
+## 현재 구성
 
 ```text
 SST-AX/
-├─ contracts/       # machine-readable protocol contract
+├─ contracts/       # 영향 분석 결과·입력 manifest 규약
 ├─ policies/        # 권한·승인·위험도 정책
-├─ templates/       # 영향 분석·PR·승인 요청 템플릿
-├─ scripts/         # Controller 및 검증 스크립트
-├─ .agents/skills/  # 반복 자동화 Workflow
-└─ .codex/agents/   # 역할별 Codex Agent 설정
+├─ templates/       # Task log 템플릿
+├─ scripts/         # 수집·분석·검증·상태·승인 CLI
+├─ state/           # Task schema, 로컬 Task·checkpoint
+└─ tests/           # 합성 입력과 로컬 회귀 테스트
 ```
 
-초기 실행 환경은 OCI 서버의 전용 계정과 Codex CLI/`codex exec`를 기준으로 검토합니다. Slack은 승인 요청과 응답을 전달하고 일일 변경사항을 정리 및 요약해서 보고하는 채널이며, 외부 API 호출과 승인 검증은 Controller/Gateway가 담당합니다.
+OCI 전용 계정을 실행 환경으로 사용합니다. Slack Gateway는 승인 응답을 검증하고,
+독립 분석 CLI는 `codex exec`를 호출합니다. 승인·거절과 Task 형식은 OCI에서 확인했으며,
+새 Codex 연결의 OCI 실실행과 분석 품질 검증은 운영자가 수행할 다음 단계입니다.
+Slack 일일 보고와 상시 Controller 통합은 후속 범위입니다.
 
 ## 도입 로드맵
 
-1. SST-AX 저장소 규칙과 문서 구조 확정
-2. SSTD·SSTC 저장소 계약 및 protocol contract 정의
-3. read-only 변경 영향 분석 PoC 구현
-4. local Controller와 checkpoint/state schema 구현
-5. OCI Codex Worker 실행 검증
-6. Slack 승인 및 작업 재개 Workflow 구현
-7. SSTC branch 수정·검증·Draft PR 생성
-8. 실패 복구, 감사 로그, 운영 지표 추가
+1. 구현: 저장소 규칙, Task 상태·checkpoint·저장 복구
+2. 구현: 입력 수집, 영향 분석 결과 규약·검증 CLI
+3. 구현·OCI 확인: Slack 승인 Gateway와 승인·거절 상태 전이
+4. 구현·로컬 검증: Codex 읽기 전용 분석, Task·세션 연결, 승인 후 읽기 전용 재개
+5. 다음: OCI Codex 실실행·sandbox 동작·분석 품질 검증
+6. 후속: SSTD protocol contract 구체화, SSTC 수정·검증·Draft PR 자동 생성 연결
+7. 후속: 상시 Controller, Slack 일일 보고, 운영 지표
 
 ## 문서
 
@@ -80,10 +88,16 @@ SST-AX/
 - [보안 모델](docs/security-model.md)
 - [저장소·Contract·Agent 운영 규칙](docs/repository-contract.md)
 - [Task 상태 규약](docs/task-state.md)
+- [영향 분석 입력 수집](docs/impact-inputs.md)
+- [영향 분석 결과 검증](docs/impact-analysis.md)
+- [Codex 읽기 전용 분석과 세션 재개](docs/codex-impact.md)
+- [Slack 승인 실행 안내](docs/slack-quickstart.md)
 - [운영 설계](docs/operations.md)
 
 ## 현재 상태
 
 SSTD의 GitHub Actions 테스트·빌드·Release와 Jenkins 기반 배포는 운영 검증이 완료되었습니다. 기존 SSTC가 SSTD 데이터를 정상적으로 수신하는 것도 확인되었습니다.
 
-SST-AX Controller, OCI AX Runner, Slack Gateway, machine-readable protocol contract, SSTC 자동 동기화는 아직 구현 전입니다.
+입력 수집부터 읽기 전용 분석·결과 검증까지 독립 CLI로 실행할 수 있습니다.
+결과 검증 성공이나 세션 ID는 구현 권한을 부여하지 않습니다. 권한 판단은 Controller가
+보관하는 checkpoint와 승인 기록을 기준으로 하며, 최종 판단과 운영 배포 책임은 사람이 유지합니다.

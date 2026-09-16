@@ -95,7 +95,8 @@ fixture는 `task`, `manifest`, `result`를 담는 테스트용 묶음이다. 테
 대한 독립 검토 지적을 수정하고 회귀 사례를 포함했다. Python 버전에 따라 다른 bracketed
 host 처리는 새 검증기 경계에서 일관되게 검사하며 기존 Task CLI는 바꾸지 않았다.
 
-다음 실제 분석 단계에서는 수집기가 입력을 고정하고, read-only Codex 결과를 이 검증기로
-검사한 뒤 사람이 정한 평가 사례와 비교해야 한다. Slack Gateway·자동 상태 변경·SSTC
-수정·Draft PR 자동 생성은 아직 이 검증기에 연결되지 않는다. 사용량 리셋 대기와
-checkpoint 운영은 기존 [운영 설계](operations.md)를 따른다.
+수집한 입력을 [Codex 읽기 전용 분석 CLI](codex-impact.md)에 전달하면 이 검증기로
+결과를 검사하고 Task 로그에 세션과 결과 해시를 기록한다. 분석 품질은 사람이 정한
+평가 사례와 별도로 비교해야 한다. SSTC 수정·Draft PR 자동 생성은 후속 범위이며,
+검증기 자체는 Task 권한을 변경하지 않는다. 사용량 리셋 대기와 checkpoint 운영은
+[실행 안내](codex-impact.md)와 기존 [운영 설계](operations.md)를 따른다.
