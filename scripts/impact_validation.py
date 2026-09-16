@@ -64,6 +64,16 @@ def load_document(path: Path) -> Any:
             raise InputError("INPUT_READ: expected a regular file")
         with path.open("rb") as stream:
             raw = stream.read(MAX_BYTES + 1)
+        return decode_document(raw)
+    except (ContractError, InputError):
+        raise
+    except (OSError, ValueError, RecursionError) as error:
+        raise InputError("INPUT_READ_OR_JSON: cannot decode input") from error
+
+
+def decode_document(raw: bytes) -> Any:
+    """Apply the same JSON limits to an in-memory Worker response before saving it."""
+    try:
         if len(raw) > MAX_BYTES:
             raise InputError("INPUT_SIZE: exceeds 1 MiB")
         text = raw.decode("utf-8")

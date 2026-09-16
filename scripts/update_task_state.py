@@ -69,6 +69,7 @@ def parse_args() -> argparse.Namespace:
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--status", help="Target task status")
     action.add_argument("--recover", action="store_true", help="Repair an interrupted save only")
+    action.add_argument("--record-reset-at", help="Record an observed usage reset time on a deferred task")
     parser.add_argument("--reason", help="Required for wait, defer, and terminal statuses")
     parser.add_argument("--deferred-until", help="Observed reset time, ISO-8601 with timezone")
     return parser.parse_args()
@@ -104,6 +105,22 @@ def update(args: argparse.Namespace) -> int:
         print("Task log must be a JSON object.", file=sys.stderr)
         return 2
     validate_pair(args.task_file, task_state, task_log)
+
+    if getattr(args, "record_reset_at", None):
+        if task_state["status"] != "DEFERRED_RATE_LIMIT" or args.deferred_until:
+            raise ValueError("Reset recording requires a deferred task")
+        checkpoint = load_checkpoint(args.task_file, task_state, task_log)
+        deadline = datetime.fromisoformat(args.record_reset_at.replace("Z", "+00:00"))
+        if deadline.tzinfo is None:
+            raise ValueError("Reset time must include timezone")
+        task_state.update(deferred_until=args.record_reset_at, updated_at=utc_now())
+        task_log.setdefault("reset_observations", []).append({
+            "reset_at": args.record_reset_at, "recorded_at": task_state["updated_at"]})
+        atomic_json(checkpoint_path(args.task_file), {
+            "state": task_state, "log": task_log, "resume_status": checkpoint["resume_status"]})
+        save_pair(args.task_file, task_state, task_log)
+        print("RESET_TIME_RECORDED")
+        return 0
 
     current_status = task_state["status"]
     if args.status not in ALLOWED_TRANSITIONS.get(current_status, set()):
