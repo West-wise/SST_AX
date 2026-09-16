@@ -67,7 +67,7 @@ def prepare_request(task_file: Path, team_id: str, channel_id: str, app_id: str)
                 return request
         request = dict(identity, nonce=secrets.token_urlsafe(32),
                        expires_at=(datetime.now(timezone.utc) + timedelta(hours=24))
-                       .isoformat().replace("+00:00", "Z"),
+                       .isoformat(),
                        snapshot_hash=snapshot, message_ts=None)
         atomic_json(path, request)
         return request
