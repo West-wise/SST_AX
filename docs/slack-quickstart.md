@@ -40,6 +40,21 @@ python -B scripts/slack_runner.py check
 `SLACK_CONNECTED`는 Bot 인증과 Socket 연결 성공을 의미한다. 채널 전송·승인자
 검증은 아래 실제 버튼 실험으로 확인한다. `check`는 메시지를 전송하지 않는다.
 
+실제 Task는 연결 확인, checkpoint 생성, 승인 Listener 실행을 하나의 명령으로 처리한다.
+토큰과 ID 환경변수가 없으면 터미널에서 입력을 요청한다. 토큰은 숨김 입력하며 파일,
+명령줄 인자, Task 로그에 저장하지 않는다. 비대화식 실행에서는 모든 값을 환경변수나
+비밀 저장소를 통해 주입해야 하며 누락된 값이 있으면 Task를 변경하기 전에 실패한다.
+
+```bash
+python -B scripts/request_slack_approval.py \
+  --task-file "$TASK_FILE" \
+  --reason UI_CHANGE
+```
+
+Task는 `ANALYZING` 또는 동일한 사유로 이미 생성된 `WAITING_APPROVAL` 상태여야 한다.
+전자는 Slack 연결 확인에 성공한 뒤 `WAITING_APPROVAL` checkpoint를 만들고, 후자는
+기존 요청을 재사용한다. 승인하면 `IMPLEMENTING`, 거절하면 `REJECTED`로 종료한다.
+
 기존 작업과 분리한 임시 Task를 만든다. 출력의 Task ID를 `AX_TASK_FILE`에 사용한다.
 
 ```bash
