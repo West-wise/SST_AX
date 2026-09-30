@@ -101,3 +101,7 @@ SSTD의 GitHub Actions 테스트·빌드·Release와 Jenkins 기반 배포는 �
 입력 수집부터 읽기 전용 분석·결과 검증까지 독립 CLI로 실행할 수 있습니다.
 결과 검증 성공이나 세션 ID는 구현 권한을 부여하지 않습니다. 권한 판단은 Controller가
 보관하는 checkpoint와 승인 기록을 기준으로 하며, 최종 판단과 운영 배포 책임은 사람이 유지합니다.
+
+SSTC의 고정 후보 SHA는 [GitHub Actions 검증 CLI](docs/github-validation.md)로 요청하고
+실행 정보·결과 JSON을 대조할 수 있습니다. 원래 Task·승인 기록은 보존하며,
+Worker의 후보 commit/push 및 Draft PR 자동 생성 연결은 후속 범위입니다.
