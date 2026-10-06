@@ -1,6 +1,6 @@
 # Agent Execution Policy
 
-> 이 문서는 SST-AX Controller가 강제해야 할 정책 기준이다. Controller 구현 전에는 설계 정책이며, 실행 환경에서 자동 강제된다고 주장하지 않는다.
+> Controller의 실행 정책 기준이다. 결과 분기·실행 근거·재시도·예산은 코드로 검증하고 OS 권한 격리와 실제 운영 증거는 별도로 확인한다.
 
 ## Scope
 
@@ -21,7 +21,9 @@
 | 최대 write 단계 | 20회 | 초과 시 중단하고 변경 범위 검토 요청 |
 | Codex 사용량 한도 | 계정 사용 가능 범위 | `DEFERRED_RATE_LIMIT`로 전이, busy-retry 금지 |
 
-사용량 한도는 ChatGPT Plus의 표시된 리셋 시각을 기준으로 재개한다. Controller는 추정 사용량으로 권한을 확대하거나 새로운 계정을 사용해서는 안 된다.
+30분은 누적 활성 실행 시간이며 Slack 승인·Actions 완료 대기는 제외한다. write 단계 20회와 후보 파일 20개 상한은 별개다. 동일 Task 재개는 예산을 초기화하지 않는다.
+
+사용량 한도는 계정에 표시된 실제 리셋 시각을 기준으로 재개한다. Controller는 추정 사용량으로 권한을 확대하거나 새로운 계정을 사용해서는 안 된다.
 
 ## Required Escalations
 

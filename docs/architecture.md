@@ -1,100 +1,41 @@
 # SST-AX 아키텍처
 
-## 목적
-
-SST-AX는 SSTD(Server State Telemetry Demon)의 변경을 분석하고, 필요한 경우 SSTC(Server State Telemetry Client)에 반영하기 위한 자동화 제어 영역이다. AI는 구현을 지원하지만 아키텍처, 프로토콜, 보안, UI 정책, 병합과 릴리즈의 최종 책임은 사람에게 있다.
-
-## 전체 구조
+목표는 SSTD 변경의 SSTC 영향을 자동으로 판단하고 필요한 수정을 검증하여 Draft PR로 전달하는 것입니다. 독립 SSTC UI/UX 요청도 같은 Task 실행 흐름을 사용합니다. 자동 입력·문맥 수집·결과에 따른 분기는 기본 범위입니다.
 
 ```mermaid
-flowchart LR
-    SSTD[SSTD repository] -->|main 변경 또는 Release| SCH[SSTD Change Handler]
-    ISSUE[SSTC Issue / 기능 요청] --> SFH[SSTC Feature Handler]
-    SCH --> AX[SST-AX Controller]
-    SFH --> AX
-    AX -->|read-only 분석| IA[Impact Analyzer]
-    IA -->|기술 변경 필요| W[Codex Worker]
-    IA -->|UI/위험 결정 필요| SL[Slack 승인]
-    SL --> W
-    W -->|변경·검증| SSTC[SSTC repository]
-    W -->|Draft PR| GH[GitHub]
-    GH --> Human[Human review and merge]
+flowchart TD
+    D[SSTD main / Release] --> DH[SSTD Change Handler]
+    C[SSTC AX Issue] --> CH[SSTC Feature Handler]
+    DH --> T[Task와 고정 입력]
+    CH --> T
+    T --> A[Codex 읽기 전용 분석]
+    A --> V[결과·근거·입력 검증]
+    V --> N[수정 불필요: 완료]
+    V --> U[판단 유보: 중단]
+    V --> P[수정 필요: 정책 판정]
+    P --> S[필요 시 Slack 승인]
+    P --> W[같은 세션 SSTC Worker]
+    S --> W
+    W --> G[후보 SHA Actions 검증]
+    G --> PR[Draft PR]
+    PR --> H[사람 review / merge / Release / 배포]
 ```
 
-## 구성 요소
-
-| 구성 요소 | 책임 | 초기 권한 |
+| 구성 | 역할 | 권한 |
 |---|---|---|
-| SSTD | 서버 데몬, 프로토콜 원천 구현 | AX read-only |
-| SSTC | Android 모바일 클라이언트 | AX branch write, Draft PR |
-| SST-AX Controller | 트리거, 상태, 승인, GitHub 작업 조정 | 별도 서비스 계정 |
-| Impact Analyzer | SSTD 변경과 SSTC 영향 분석 | read-only |
-| Codex Worker | 승인된 범위의 SSTC 수정·검증 | 전용 workspace |
-| Slack Gateway | 승인 요청, 일일 보고, 서명 검증 | 승인 명령만 전달 |
+| Controller | GitHub polling·중복 방지·Task 분기·재개 | 상태·SSTC 후보·Draft PR |
+| SSTD Change Handler | cursor와 main/Release의 고정 범위 수집 | SSTD read-only |
+| SSTC Feature Handler | `[AX]` Issue 본문 snapshot | 입력 read-only |
+| Analyzer | diff·decoder/model/단위/UI 근거 분석 | 도구 없는 읽기 전용 |
+| 실행 정책 | 분석·위험도·승인·세션 결합 판정 | 실행 근거 생성·재검증 |
+| Worker | 허용 범위의 SSTC 구현 | 격리 worktree |
+| Slack Gateway | 검증된 분석 표시·승인 결정 저장 | 승인 전이만 |
+| GitHub Sensor / publisher | 고정 후보 검증·receipt·Draft PR | 토픽 branch·Actions·Draft PR |
 
-## Controller 진입점
+두 Handler는 하나의 Controller에서 동작합니다. 파일 상태·입력 journal·Task별 OS 잠금을 사용하며 DB·외부 큐를 추가하지 않습니다. source는 commit SHA에 고정하고 미커밋 변경을 읽거나 덮어쓰지 않습니다.
 
-SST-AX Controller는 변경 출처에 따라 두 개의 논리적 Handler를 제공한다. 초기에는 하나의 Controller 프로세스 안에서 구현하며, 별도 서비스로 분리하지 않는다.
+SSTD 계약 변경은 이미 존재하는 commit이 입력입니다. 승인된 SSTC decoder/model/단위/UI 적응은 허용하지만 SSTD를 수정하지 않습니다. SSTC 요청에 새 SSTD 계약이 필요하면 중단합니다. 상한 내 문맥 수집은 의미적 충분성의 증명이 아니며 누락·UNKNOWN은 수정 불필요로 처리하지 않습니다.
 
-| Handler | 입력 | 목적 |
-|---|---|---|
-| `SSTD Change Handler` | SSTD main 변경, Release, protocol contract 변경 | SSTC 동기화 영향 분석 및 유지보수 PR |
-| `SSTC Feature Handler` | GitHub Issue, 기능 요청, 버그 리포트 | SSTC 자체 기능 개발 및 Draft PR |
+승인 checkpoint와 감사 기록, 입력·결과·세션을 묶은 실행 근거는 보존합니다. 재시도·예산·작업 공간 상태는 별도 실행 checkpoint에 기록합니다. 구현 지침과 검증의 소유자는 SSTC이며, 후보 SHA·workflow·run attempt·artifact가 일치해야 Draft PR을 만듭니다.
 
-두 Handler는 Task 생성 이후 위험도 분석, Slack 승인, Codex 실행, 검증, Draft PR, 일일 보고를 공유한다. 작업량과 권한 경계가 커질 때만 Handler별 Worker 분리를 검토한다.
-
-Slack 일일 보고는 자동화 실행 결과를 전달하는 운영 알림 기능이다. 보고 기능이 추가되어도 AI의 코드 변경·merge·Release 권한은 확대되지 않는다.
-
-## Slack 보고 흐름
-
-```text
-Controller / Report Generator
-        ↓
-일일 실행 결과 집계
-        ↓
-민감 정보 제거·중복 확인
-        ↓
-Slack 운영 채널 게시
-```
-
-승인 요청은 즉시 전송하고, 일일 보고는 정해진 주기에 요약 전송한다. 두 메시지는 목적과 처리 규칙을 분리한다.
-
-## 설계 원칙
-
-Task 상태는 [`Task 상태 규약`](task-state.md)을 단일 설명 기준으로 사용한다. JSON Schema는 기계 검증 계약이고, 상태 전이 구현은 해당 규약과 함께 변경한다.
-
-1. **Human ownership:** 프로토콜·보안·UI 정책·merge·release·production 배포는 사람이 결정한다.
-2. **Bounded autonomy:** AI의 실행 권한보다 금지 영역을 먼저 정의한다.
-3. **Single source of truth:** machine-readable contract, ADR, 요구사항, 코드 순서로 참조한다.
-4. **Auditability:** 입력 commit/release, 영향 분석, 변경 파일, 검증 결과, 승인 결과, PR을 남긴다.
-5. **Small steps:** 분석 → 승인 → 구현 → 검증 → Draft PR 순서로 작업한다.
-
-## 현재 기준선
-
-- SSTD는 C++17/CMake/Linux 프로젝트이며 실행 파일은 `sstd`이다.
-- SSTD CI/CD는 GitHub Actions의 테스트·빌드·Release와 Jenkins의 Release 배포로 운영 검증되었다.
-- 기존 SSTC가 SSTD 데이터를 정상적으로 수신하는 것까지 확인되었다.
-- SST-AX는 SSTD/SSTC와 분리된 저장소로 구성하기로 결정했다.
-- SST-AX Controller, OCI 상주 Worker, Slack Gateway, 자동 SSTC 동기화는 아직 구현 전이다.
-
-## 도입 단계
-
-```text
-1. 수동 Codex 실행
-2. 반복 절차의 Skill화
-3. codex exec 기반 분석 자동화
-4. SSTD 변경 영향 분석
-5. SSTC 수정 및 Draft PR 생성
-6. 검증된 저위험 작업만 제한적 unattended 실행
-```
-
-## ADR 운영
-
-다음 결정은 `docs/adr/`에 ADR로 기록한다.
-
-- 프로토콜 버전 및 호환성 정책
-- 인증·암호화·replay protection
-- Agent 권한과 승인 경계
-- 상태 저장 위치와 보존 정책
-- SSTC UI 정보 구조
-- 외부 dependency 도입
+자동 종료는 `COMPLETED` 또는 Draft PR의 `READY_FOR_REVIEW`입니다. [Controller](controller.md), [승인](approval-workflow.md), [복구](operations.md)를 함께 따릅니다.

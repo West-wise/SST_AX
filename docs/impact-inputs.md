@@ -6,14 +6,15 @@ Codex·Slack·GitHub를 호출하거나 Task 상태·소스 저장소를 변경�
 
 ## 입력 선택과 고정
 
-운영자가 대상 커밋과 필요한 파일을 지정한다. 브랜치·태그는 처음에 커밋 SHA로
+[Controller](controller.md)는 SSTD 변경 파일과 관련 decoder/model/단위/UI·검증·지침을 상한 내에서 자동 수집한다.
+수동 CLI는 운영자가 대상 커밋과 필요한 파일을 지정할 수도 있다. 브랜치·태그는 처음에 커밋 SHA로
 해석하고, 이후에는 그 SHA의 Git 객체만 읽는다. 작업 폴더의 미커밋 수정은
 분석에 포함되지 않는다. 자동 fetch나 checkout도 수행하지 않는다.
 
 - SSTD 변경: Task의 source_reference가 대상이다. 비교 기준은 `--sstd-base`로
   명시한다. 최초 커밋만 `ROOT`를 사용한다. merge도 비교 기준을 명시한다.
 - SSTC 요청: `--request-file`의 UTF-8 원본 바이트를 snapshot으로 삼는다.
-  Issue URL만으로 본문의 동일성을 판단하지 않으며 Issue 자동 수집은 하지 않는다.
+  Issue URL만으로 본문 동일성을 판단하지 않는다. Controller가 조회한 본문 snapshot을 전달한다.
 - SSTC 문맥: `--sstc-context`에 필요한 파일을 반복 지정한다. 루트 및 해당
   경로의 상위 디렉터리에 있는 `AGENTS.md`도 수집한다. 읽은 지침은 분석 자료이며
   SST-AX의 승인·권한을 변경할 수 없다.
@@ -76,6 +77,6 @@ python3 -B -m unittest discover -s tests -v
 ```
 
 테스트는 임시 Git 저장소와 합성 자료를 사용한다. 실제 OCI·Codex 분석 품질 검증과
-구분한다. 다음 단계는 입력 묶음을 읽기 전용 Codex 실행에 전달하고 결과 JSON을
+구분한다. 입력 묶음은 읽기 전용 Codex 실행에 전달하고 결과 JSON을
 `validate_impact_result.py`로 검사하는 것이다. 수집 성공과 결과 형식 검증만으로
-`COMPLETED` 또는 `IMPLEMENTING` 상태를 허용하지 않는다.
+`COMPLETED` 또는 `IMPLEMENTING` 상태를 허용하지 않는다. 실행 정책이 입력·분석·위험도·승인 결합을 다시 확인한다.

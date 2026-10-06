@@ -97,6 +97,20 @@ host 처리는 새 검증기 경계에서 일관되게 검사하며 기존 Task 
 
 수집한 입력을 [Codex 읽기 전용 분석 CLI](codex-impact.md)에 전달하면 이 검증기로
 결과를 검사하고 Task 로그에 세션과 결과 해시를 기록한다. 분석 품질은 사람이 정한
-평가 사례와 별도로 비교해야 한다. SSTC 수정·Draft PR 자동 생성은 후속 범위이며,
+평가 사례와 별도로 비교해야 한다. SSTC 수정·Draft PR은 [Controller](controller.md)가 연결하며,
 검증기 자체는 Task 권한을 변경하지 않는다. 사용량 리셋 대기와 checkpoint 운영은
 [실행 안내](codex-impact.md)와 기존 [운영 설계](operations.md)를 따른다.
+
+## 의미 평가
+
+`tests/fixtures/semantic/`은 고정 SSTD/SSTC 코드에 근거한 가상 변경 사례와 사람이 정한 예상 분류입니다. 실제 운영 commit이라고 주장하지 않습니다. uptime 단위·packed 필드 폭 변경, daemon 내부 로그, decoder 증적 누락을 구분합니다.
+
+해당 사례의 입력으로 얻은 실제 분석 결과를 다음처럼 예상 분류와 비교합니다.
+
+```bash
+python -B scripts/evaluate_impact.py \
+  --case-file tests/fixtures/semantic/uptime-unit.json \
+  --result-file /absolute/path/case-analysis.json
+```
+
+`MATCH`는 해당 사례의 예상 change/impact/approval 분류와 일치한다는 뜻이며 실행 권한이 아닙니다. 다른 입력의 결과를 비교한 점수는 의미 없습니다. 로컬 테스트는 형식에 맞는 잘못된 NOT_REQUIRED가 거부되는지 확인합니다. 실제 모델 정확도는 별도 replay 결과로 측정합니다.

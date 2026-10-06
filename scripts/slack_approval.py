@@ -88,6 +88,54 @@ def bind_message(task_file: Path, nonce: str, message_ts: str) -> None:
         atomic_json(companion(task_file, "slack-request"), request)
 
 
+def approval_review(task_file: Path, request: dict) -> dict:
+    """Read the verified analysis in the exact approval snapshot, never raw logs."""
+    from codex_impact import bundle, canonical, digest, regular
+    from impact_collection import check_content
+    from impact_validation import load_document, validate_impact
+
+    with task_lock(task_file):
+        state, log = _pair(task_file)
+        if request["snapshot_hash"] != _snapshot(task_file, state, log):
+            raise ValueError("Approval review snapshot changed")
+        record = log.get("codex_analysis", {})
+        if record.get("outcome") != "VALID":
+            raise ValueError("Verified analysis is required for approval")
+        name = record.get("result_file")
+        if not isinstance(name, str) or Path(name).name != name:
+            raise ValueError("Invalid analysis artifact")
+        result_file = task_file.parent / name
+        regular(result_file)
+        result = load_document(result_file)
+        check_content(canonical(result))
+        if digest(result) != record.get("result_sha256"):
+            raise ValueError("Approval result changed")
+        # Operators may have retained older, incomplete bundles. Only the exact
+        # retained manifest, with every evidence hash recomputed, can be used.
+        manifests = list(task_file.parent.glob(task_file.stem + ".inputs*/manifest.json"))
+        if record.get("inputs_directory"):
+            manifests.insert(0, Path(record["inputs_directory"]) / "manifest.json")
+        manifest = None
+        for candidate in manifests:
+            regular(candidate)
+            if digest(load_document(candidate)) == record.get("manifest_sha256"):
+                manifest, _ = bundle(state, candidate.parent)
+                break
+        if manifest is None or validate_impact(state, manifest, result):
+            raise ValueError("Approval input or result is invalid")
+        return {
+            "source_type": state["source_type"],
+            "source_reference": state["source_reference"],
+            "risk_level": state["risk_level"],
+            "approval_reason": state["approval_reason"],
+            "input_context": result["input_context"],
+            "summary": result["summary"],
+            "impacts": result["impacts"],
+            "approval_reasons": result["approval_reasons"],
+            "unresolved_questions": result["unresolved_questions"],
+        }
+
+
 def apply_decision(task_file: Path, payload: dict, *, team_id: str, channel_id: str,
                    app_id: str, approver_ids: set[str]) -> str:
     """Validate an authenticated block_actions payload and journal its decision."""

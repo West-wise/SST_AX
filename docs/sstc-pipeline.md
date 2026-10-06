@@ -2,14 +2,14 @@
 
 `run_sstc_pipeline.py`는 Controller에서 실행한다. Worker의 GitHub 인증정보와
 push/PR 권한을 확대하지 않으며, Slack 승인 checkpoint와 기존 세션 ID를 재검증한다.
-현재 구현은 운영자가 CLI를 순서대로 실행하는 방식이다. 상시 실행과 자동 polling은 별도 범위다.
+[Controller](controller.md)가 자동 연결한다. 아래 CLI는 점검·복구에도 사용한다.
 
 ## 조건
 
 - SSTC의 `sstc-validation.yml`이 `main`에 있어야 한다.
 - Controller 계정의 `gh` 인증에 SSTC Contents 쓰기, Actions 쓰기, Pull requests 쓰기 권한이 필요하다.
   인증정보는 Task·저장소·요청·로그에 기록하지 않는다.
-- 입력 manifest와 분석 결과가 유효하고, Slack Gateway가 승인한 `IMPLEMENTING` Task여야 한다.
+- 입력·결과가 유효하고 실행 정책이 허용하거나 Slack Gateway가 승인한 `IMPLEMENTING` Task여야 한다.
 - Worker는 새 worktree에서 `--validation-mode github`로 같은 Codex 세션을 재개한다.
   실제 `thread.started` ID도 승인된 세션 ID와 같아야 한다.
 - 소스 revision은 분석 manifest의 전체 SHA로 고정한다. source HEAD로 대체하지 않는다.
@@ -34,7 +34,7 @@ python -B scripts/run_sstc_pipeline.py publish \
   --task-file "$TASK_FILE" --input-directory "$INPUT_DIR"
 ```
 
-Controller는 승인 당시 상태·로그를 재구성하고 checkpoint·승인 nonce·입력·결과를 대조한다.
+Controller는 실행 근거에 저장한 정책 허용 또는 승인 snapshot·nonce·입력·결과를 대조한다.
 Worker가 완료한 변경과 현재 worktree가 같으면 Git Data API로 후보 tree와 commit을 만들고,
 **새 `ax/sstc-sync/*` 원격 브랜치**를 등록한다. 기존 원격 브랜치를 갱신하거나 force push하지 않는다.
 Git worktree의 HEAD·index·미커밋 변경은 보존하며, 원격 commit SHA를 후보로 기록한다.
@@ -66,7 +66,8 @@ python -B scripts/run_sstc_pipeline.py check --task-file "$TASK_FILE"
 
 `<task>.pipeline.json`에 단계·후보·API 명령 receipt·승인 pair·Task snapshot을 보존한다.
 `<task>.github-validation.json`은 기존 원격 Sensor의 결과 기록이다.
-승인 권한의 기준인 `state/checkpoints/<task>.json`은 덮어쓰지 않는다.
+최초 승인 checkpoint·요청·승인 직후 pair는 execution-authority에 불변 보존하고 매번 재검증한다.
+표준 checkpoint는 현재 중단·재개 상태를 담으며 원래 승인 근거를 대신하지 않는다.
 
 ## 중단과 복구
 
@@ -80,7 +81,7 @@ python -B scripts/run_sstc_pipeline.py check --task-file "$TASK_FILE"
 - Task pair 저장 중단으로 `.pending.json`이 있으면 기존 `update_task_state.py --recover`
   절차로 복구하고 `check`를 재개한다. PR 생성 후 상태 기록 중단도 완료 receipt로 이어간다.
 - OCI의 기존 `sstc-feature-20260916-0001`은 `WORKER_FAILED`이고 dirty worktree가 있다.
-  이 pipeline은 그 기록을 승인된 새 구현으로 바꾸거나 기존 worktree를 덮어쓰지 않는다.
-  사람이 diff·세션·승인 기록을 검토한 뒤 새 Task 또는 승인된 복구 절차를 선택해야 한다.
+  Worker의 `--resume`가 원래 승인·입력·세션·branch·source·diff를 검증할 때 같은 Task를 이어간다.
+  복구 근거가 없거나 범위가 바뀌면 사람이 새 승인 또는 새 Task를 결정한다.
 
 자동화 종료는 Draft PR과 `READY_FOR_REVIEW`다. merge·Release·production 배포는 사람이 수행한다.
