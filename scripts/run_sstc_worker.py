@@ -19,11 +19,13 @@ def main() -> int:
     parser.add_argument("--branch", required=True)
     parser.add_argument("--input-directory", type=Path, required=True)
     parser.add_argument("--codex", default="codex")
+    parser.add_argument("--validation-mode", choices=("local", "github"), default="local",
+                        help="local runs Gradle; github leaves build/test to the Controller")
     args = parser.parse_args()
     from sstc_worker import run
     try:
         outcome = run(args.task_file, args.sstc_repository, args.worktree, args.branch,
-                      args.input_directory, args.codex)
+                      args.input_directory, args.codex, args.validation_mode)
     except KeyboardInterrupt:
         print("SSTC_WORKER=INTERRUPTED", file=sys.stderr); return 130
     except Exception:
@@ -31,7 +33,7 @@ def main() -> int:
     print("SSTC_WORKER=" + outcome)
     print("PUSH_AUTHORIZATION=NONE")
     print("PR_AUTHORIZATION=NONE")
-    return 0 if outcome == "VALIDATED" else 1
+    return 0 if outcome in {"VALIDATED", "IMPLEMENTED"} else 1
 
 if __name__ == "__main__":
     raise SystemExit(main())

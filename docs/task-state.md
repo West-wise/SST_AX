@@ -94,8 +94,8 @@ stateDiagram-v2
   `WAITING_APPROVAL`에서의 진행은 검증된 Slack 승인이 필요하다. 일반 상태 CLI는
   이 경로를 거부하며 [Slack Gateway](slack-quickstart.md)만 인증된 응답을 적용한다.
   임의 승인 JSON은 받지 않는다.
-- `READY_FOR_REVIEW`: 신뢰 가능한 검증 실행 결과와 Draft PR 생성 결과를
-  기록하는 구성 요소가 아직 없으므로 현재 CLI는 전환을 거부한다.
+- `READY_FOR_REVIEW`: 일반 상태 CLI는 전환을 거부한다. [SSTC pipeline](sstc-pipeline.md)이
+  승인된 구현·고정 후보 커밋·원격 검증·Draft PR receipt를 대조한 뒤 이 전이를 수행한다.
 - `WAITING_APPROVAL`, `DEFERRED_RATE_LIMIT`: state/log snapshot과 재개 단계를
   checkpoint에 먼저 저장한다. 사용량 제한은 timezone이 있는 관측된 reset 시각을
   `--deferred-until`로 지정한다. 시각을 모르면 추정해서 실행하지 않는다.
