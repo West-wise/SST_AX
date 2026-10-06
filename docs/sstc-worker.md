@@ -18,3 +18,8 @@ python -B scripts/run_sstc_worker.py \
 기존 실행은 같은 명령에 `--resume`을 추가합니다. 같은 branch·worktree·source·HEAD·diff와 실행 checkpoint를 검증하며 같은 session ID를 사용합니다. recoverable 실패는 예산 안에서 재개하고 사용량 제한은 현재 checkpoint와 DEFERRED_RATE_LIMIT를 남깁니다. 실제 확인한 reset 시각 이후에만 진행하며 최초 승인 snapshot은 실행 근거에 불변 보존합니다.
 
 기존 WORKER_FAILED도 원래 승인·입력·세션과 작업 공간이 복원 검증될 때만 재개합니다. 기록 부족·비정상 종료·3회 실패·예산 초과는 에스컬레이션하고 삭제나 성공 값 편집으로 우회하지 않습니다. [운영](operations.md), [후보 검증](sstc-pipeline.md)을 참조합니다.
+
+이전 버전의 receipt에 실행 예산이 없으면 `--legacy-active-seconds`와
+`--legacy-write-steps`에 운영자가 실제 확인한 누적 실행 시간·write/shell 단계 수를 함께
+기록해야 합니다. 기록이 없다는 이유로 0을 추측하지 않습니다. 값을 확인할 수 없으면
+자동 재개하지 않고 기존 diff를 보존한 상태에서 새 Task·승인을 검토합니다.

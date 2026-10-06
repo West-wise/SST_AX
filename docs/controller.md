@@ -27,7 +27,7 @@ cd "$HOME/workspace/SST_AX"
 python -B scripts/run_controller.py --config /absolute/path/controller.json --once
 ```
 
-한 차례 확인으로 설정·상태를 점검하고 준비되면 `--once`를 제거하여 주기 실행합니다. 승인 대기에 Codex를 유지하지 않고 여러 대기 Task를 하나의 bounded Socket Mode 연결로 처리합니다. systemd 설치·자동 시작은 운영자가 수행합니다.
+한 차례 확인으로 설정·상태를 점검하고 준비되면 `--once`를 제거하여 주기 실행합니다. 승인 대기에 Codex를 유지하지 않고 여러 대기 Task를 하나의 bounded Socket Mode 연결로 처리합니다. 기존 대기 승인은 무거운 실행 단계 전에 확인합니다. Worker 실행 중 새 결정의 반영은 다음 polling 단계까지 지연될 수 있습니다. systemd 설치·자동 시작은 운영자가 수행합니다.
 
 ## 입력과 개입
 
