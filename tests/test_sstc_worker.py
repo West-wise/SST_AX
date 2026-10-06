@@ -133,6 +133,166 @@ class SstcWorkerTest(unittest.TestCase):
                                          self.inputs), "VALIDATED")
         self.assertEqual((self.source / "local-notes").read_text(encoding="utf-8"), "keep")
 
+    def pin_inputs_and_approve(self):
+        self.manifest["input_context"]["sstc_revision"] = self.revision
+        for item in self.manifest["evidence"]:
+            if item["source"] == "SSTC":
+                item["revision"] = self.revision
+        self.result["input_context"] = copy.deepcopy(self.manifest["input_context"])
+        storage.atomic_json(self.inputs / "manifest.json", self.manifest)
+        self.analysis()
+        self.approve()
+
+    def test_github_worker_records_candidate_without_local_gradle(self):
+        self.pin_inputs_and_approve()
+        files = [{"path": "app/src/main/Test.kt", "mode": "100644", "sha256": "a" * 64}]
+        def fake_invoke(executable, session, prompt, cwd):
+            self.assertEqual(session, SESSION)
+            self.assertEqual(cwd, self.worktree)
+            self.assertIn(b"do not run local Android build, test, or lint", prompt)
+            self.assertIn(b"GitHub Actions", prompt)
+            self.assertIn(b"Do not push or create a PR", prompt)
+            self.assertNotIn(b"./gradlew", prompt)
+            return 0, self.github_events(), None
+        with patch.object(worker, "git", return_value=""), patch.object(worker, "create_worktree"), \
+             patch.object(worker, "invoke", side_effect=fake_invoke), patch.object(worker, "validation") as build, \
+             patch("sstc_candidate.candidate_snapshot", return_value=files) as snapshot:
+            self.assertEqual(worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
+                                         self.inputs, validation_mode="github"), "IMPLEMENTED")
+        build.assert_not_called()
+        snapshot.assert_called_once_with(self.worktree, self.revision, "ax/sstc-sync/demo")
+        state, log = self.pair()
+        record = log["codex_worker"]
+        self.assertEqual(state["status"], "IMPLEMENTING")
+        self.assertEqual(record["validation_mode"], "github")
+        self.assertIsNone(record["validation"])
+        self.assertEqual(record["candidate_files"], files)
+        self.assertEqual(log["commands"][-1]["exit_code"], 0)
+        self.assertIsNotNone(log["commands"][-1]["finished_at"])
+
+    def test_github_changed_approval_and_session_are_rejected_before_execution(self):
+        self.pin_inputs_and_approve()
+        state, original = self.pair()
+        for field, value in (("decision", "REJECTED"), ("nonce", "unapproved")):
+            with self.subTest(field=field):
+                log = copy.deepcopy(original)
+                log["approvals"][-1][field] = value
+                storage.save_pair(self.task, state, log)
+                with patch.object(worker, "create_worktree") as add, patch.object(worker, "invoke") as invoke:
+                    with self.assertRaises(ValueError):
+                        worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
+                                   self.inputs, validation_mode="github")
+                add.assert_not_called()
+                invoke.assert_not_called()
+        log = copy.deepcopy(original)
+        log["codex_analysis"]["session_id"] = "0199a213-81c0-7800-8aa1-bbab2a035a54"
+        storage.save_pair(self.task, state, log)
+        with patch.object(worker, "create_worktree") as add:
+            with self.assertRaises(ValueError):
+                worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
+                           self.inputs, validation_mode="github")
+        add.assert_not_called()
+
+    def test_github_conflicting_analysis_revision_is_rejected(self):
+        # The local fixture deliberately pins analysis and manifest to different revisions.
+        with patch.object(worker, "create_worktree") as add, patch.object(worker, "git") as git:
+            with self.assertRaisesRegex(ValueError, "PINNED_REVISION_REQUIRED"):
+                worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
+                           self.inputs, validation_mode="github")
+        add.assert_not_called()
+        git.assert_not_called()
+
+    def test_github_changed_manifest_is_rejected(self):
+        self.pin_inputs_and_approve()
+        self.manifest["input_context"]["sstc_revision"] = "b" * 40
+        storage.atomic_json(self.inputs / "manifest.json", self.manifest)
+        with patch.object(worker, "create_worktree") as add:
+            with self.assertRaises(ValueError):
+                worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
+                           self.inputs, validation_mode="github")
+        add.assert_not_called()
+
+    def test_github_rejected_candidate_is_not_implemented(self):
+        self.pin_inputs_and_approve()
+        with patch.object(worker, "git", return_value=""), patch.object(worker, "create_worktree"), \
+             patch.object(worker, "invoke", return_value=(0, self.github_events(), None)), \
+             patch.object(worker, "validation") as build, \
+             patch("sstc_candidate.candidate_snapshot", side_effect=ValueError("HEAD_OR_BRANCH_CHANGED")):
+            with self.assertRaisesRegex(ValueError, "HEAD_OR_BRANCH_CHANGED"):
+                worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
+                           self.inputs, validation_mode="github")
+        build.assert_not_called()
+        state, log = self.pair()
+        self.assertEqual(state["status"], "IMPLEMENTING")
+        self.assertEqual(log["codex_worker"]["outcome"], "WORKER_FAILED")
+        self.assertNotIn("candidate_files", log["codex_worker"])
+
+    def test_github_failed_codex_skips_snapshot_and_build(self):
+        self.pin_inputs_and_approve()
+        with patch.object(worker, "git", return_value=""), patch.object(worker, "create_worktree"), \
+             patch.object(worker, "invoke", return_value=(1, b'{"type":"turn.failed"}\n', None)), \
+             patch.object(worker, "validation") as build, patch("sstc_candidate.candidate_snapshot") as snapshot:
+            self.assertEqual(worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
+                                         self.inputs, validation_mode="github"), "CODEX_FAILED")
+        build.assert_not_called()
+        snapshot.assert_not_called()
+
+    def test_github_real_worktree_records_untracked_source_and_refuses_replay(self):
+        self.pin_inputs_and_approve()
+        content = "package example\nclass Test\n"
+        def fake_invoke(executable, session, prompt, cwd):
+            added = cwd / "app/src/main/java/Test.kt"
+            added.parent.mkdir(parents=True)
+            added.write_text(content, encoding="utf-8")
+            return 0, self.github_events(), None
+        with patch.object(worker, "invoke", side_effect=fake_invoke), patch.object(worker, "validation") as build:
+            self.assertEqual(worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
+                                         self.inputs, validation_mode="github"), "IMPLEMENTED")
+        build.assert_not_called()
+        state, log = self.pair()
+        self.assertEqual(log["codex_worker"]["candidate_files"], [{
+            "path": "app/src/main/java/Test.kt", "mode": "100644",
+            "sha256": __import__("hashlib").sha256(
+                (self.worktree / "app/src/main/java/Test.kt").read_bytes()).hexdigest()}])
+        self.assertEqual(worker.git(self.source, ["rev-parse", "HEAD"]), self.revision)
+        with patch.object(worker, "create_worktree") as add:
+            with self.assertRaisesRegex(ValueError, "STALE_APPROVAL"):
+                worker.run(self.task, self.source, self.root / "another-worktree", "ax/sstc-sync/another",
+                           self.inputs, validation_mode="github")
+        add.assert_not_called()
+
+    def github_events(self):
+        return (json.dumps({"type": "thread.started", "thread_id": SESSION}).encode() +
+                b'\n{"type":"turn.completed"}\n')
+
+    def test_github_session_event_requires_exactly_one_approved_thread(self):
+        completed = b'{"type":"turn.completed"}\n'
+        wrong = json.dumps({"type": "thread.started", "thread_id": "0199a213-81c0-7800-8aa1-bbab2a035a54"}).encode()
+        valid = json.dumps({"type": "thread.started", "thread_id": SESSION}).encode()
+        for events in (completed, wrong + b"\n" + completed, valid + b"\n" + valid + b"\n" + completed):
+            with self.subTest(events=events):
+                self.assertEqual(worker.validate_events(events, SESSION), "SESSION_MISMATCH")
+        self.assertIsNone(worker.validate_events(self.github_events(), SESSION))
+        self.assertEqual(worker.validate_events(valid + b'\n{"type":"turn.failed"}\n', SESSION), "CODEX_FAILED")
+
+    def test_github_missing_session_event_skips_candidate_and_validation(self):
+        self.pin_inputs_and_approve()
+        with patch.object(worker, "git", return_value=""), patch.object(worker, "create_worktree"), \
+             patch.object(worker, "invoke", return_value=(0, b'{"type":"turn.completed"}\n', None)), \
+             patch.object(worker, "validation") as build, patch("sstc_candidate.candidate_snapshot") as snapshot:
+            self.assertEqual(worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
+                                         self.inputs, validation_mode="github"), "SESSION_MISMATCH")
+        snapshot.assert_not_called()
+        build.assert_not_called()
+        self.assertEqual(self.pair()[1]["codex_worker"]["outcome"], "SESSION_MISMATCH")
+
+    def test_unknown_validation_mode_is_rejected(self):
+        with patch.object(worker, "create_worktree") as add:
+            with self.assertRaisesRegex(ValueError, "VALIDATION_MODE_REFUSED"):
+                worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
+                           self.inputs, validation_mode="remote")
+        add.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

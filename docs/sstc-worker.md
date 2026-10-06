@@ -29,14 +29,25 @@ python3 -B scripts/run_sstc_worker.py \
   --branch ax/sstc-sync/<topic>
 ```
 
-Worker prompt는 승인된 분석의 범위만 구현하고 `./gradlew testDebugUnitTest assembleDebug`를
-실행하도록 제한한다. 이 명령은 SSTC CI에 선언된 유일한 결정적 build/test 센서다. 출력 원문은
-Task log에 저장하지 않고 exit code와 명령 receipt만 기록한다.
+기본값 `--validation-mode local`은 승인된 분석의 범위만 구현하고
+`./gradlew testDebugUnitTest assembleDebug`를 실행한다. 출력 원문은 Task log에 저장하지 않고
+exit code와 명령 receipt만 기록한다.
 
 성공 출력은 `SSTC_WORKER=VALIDATED`, `PUSH_AUTHORIZATION=NONE`,
 `PR_AUTHORIZATION=NONE`이다. 이 결과만으로 Draft PR을 만들거나 `READY_FOR_REVIEW`로
-전이하지 않는다. 별도 PR 생성기는 검증 receipt, diff, branch와 사람 검토를 확인한 뒤
-후속 단계에서 구현한다.
+전이하지 않는다.
+
+OCI에서 Android 빌드 환경 없이 구현하려면 같은 명령에 `--validation-mode github`을 추가한다.
+이 모드는 기존 Slack 승인과 Codex 세션을 그대로 검증하며, 분석 manifest의 고정 SSTC revision만
+사용한다. 분석 기록의 revision이 manifest와 다르면 작업을 시작하지 않는다. Worker와 Codex는
+로컬 Android build·test·lint를 실행하지 않고, Controller가 GitHub Actions 검증을 요청한다.
+
+Codex 구현이 완료되면 HEAD·branch·변경 파일을 검사하고 신규 파일과 삭제 파일을 포함한
+후보 목록을 `codex_worker.candidate_files`에 기록한다. 성공 출력은 `SSTC_WORKER=IMPLEMENTED`이며
+`validation`은 `null`, `validation_mode`는 `github`이다. Task는 `IMPLEMENTING`에 남고
+`PUSH_AUTHORIZATION=NONE`, `PR_AUTHORIZATION=NONE`도 유지된다. 이 결과는 빌드·테스트 성공이나
+push·PR 권한을 뜻하지 않는다. 후속 Controller가 승인 기록과 후보 파일을 다시 대조한 뒤
+커밋·토픽 branch push·Actions 검증·Draft PR 생성을 진행한다.
 
 실패하면 `codex_worker.outcome`과 validation exit code를 기록한다. timeout·중단·Codex
 실패에는 자동 새 세션이나 자동 재승인을 사용하지 않는다. worktree를 삭제하지 않으며,

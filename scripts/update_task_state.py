@@ -146,7 +146,7 @@ def update(args: argparse.Namespace) -> int:
                 or current_status == "WAITING_APPROVAL"):
             raise ValueError("Verified Slack approval required; use the authenticated Slack gateway")
     if args.status == "READY_FOR_REVIEW":
-        raise ValueError("Trusted validation evidence and Draft PR receipt required; producers are not implemented")
+        raise ValueError("Trusted validation evidence and Draft PR receipt required; use the SSTC pipeline producer")
 
     resume_status = current_status
     if current_status == "DEFERRED_RATE_LIMIT":

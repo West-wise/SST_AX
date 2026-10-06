@@ -63,8 +63,8 @@ POST 전 기록한 `DISPATCH_UNCERTAIN`이 남으면 요청이 전송됐는지 �
 
 OCI의 기존 `sstc-feature-20260916-0001` UI Task는 별도 복구 대상이다.
 기존 diff, Codex 세션 ID와 승인 기록을 보존한다. 이 Sensor 성공만으로 실패 Worker를
-재실행하거나 미커밋 변경을 push하지 않는다. Worker 구현/검증 분리, 승인된 후보 커밋 준비,
-원격 검증 결과를 사용하는 Draft PR 생성기는 후속 작업이다.
+재실행하거나 미커밋 변경을 push하지 않는다. 새 원격 모드 Worker의 후보 게시와 검증 후
+Draft PR 생성은 [SSTC pipeline](sstc-pipeline.md)으로 연결한다.
 UI의 실제 기기 세로·가로 확인은 사람이 수행한다.
 
 기준: [workflow dispatch API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event),
