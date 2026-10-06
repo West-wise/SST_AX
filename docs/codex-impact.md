@@ -14,7 +14,7 @@ python -B scripts/run_codex_impact.py \
 
 성공 출력은 CODEX_IMPACT=VALID, AUTHORIZATION=NONE입니다. 실행 정책이 입력·결과·세션을 재검증하여 완료·판단 유보·조건부 승인을 분기합니다.
 
-thread.started의 ID를 즉시 checkpoint에 저장하고 정확한 ID로 재개합니다. `--last`나 자동 새 세션을 쓰지 않습니다. 정상 승인 후에는 Worker가 같은 세션으로 구현합니다. 과거 `--resume-approved`는 읽기 전용 후속 분석 점검용이며 정상 Controller 경로가 아닙니다. 후속 분석이 범위를 바꾸면 원래 구현 승인을 그대로 쓸 수 있다고 가정하지 않습니다.
+thread.started의 ID를 즉시 checkpoint에 저장하고 정확한 ID로 재개합니다. `--last`나 자동 새 세션을 쓰지 않습니다. 정상 승인 후에는 Worker가 같은 세션으로 구현합니다. 과거 `--resume-approved` CLI는 승인 기록을 재분석으로 바꾸는 함정을 막기 위해 거부합니다. 후속 영향 재분석은 새 Task로 진행하고, 이전 구현 승인을 새 결과에 재사용하지 않습니다.
 
 immutable 실행 근거와 mutable 실행 checkpoint를 분리하여 로그 추가만으로 승인을 폐기하지 않습니다. 동일 입력·범위·작업 공간을 재검증한 뒤 재개합니다.
 
