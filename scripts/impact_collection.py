@@ -21,7 +21,7 @@ from validate_task_state import DEFAULT_SCHEMA_PATH, validate_task_state
 
 MAX_EVIDENCE_BYTES = 65_536
 MAX_TOTAL_BYTES = 1_048_576
-MAX_EVIDENCE = 64
+MAX_EVIDENCE = 128
 MAX_GIT_BYTES = 2_097_152
 GIT_TIMEOUT = 15
 SHA40 = re.compile(r"[0-9a-f]{40}")
@@ -333,7 +333,8 @@ def collect(args: argparse.Namespace) -> bool:
     if is_sstd:
         if not (args.source_repository and args.sstd_base and args.sstd_path) or args.request_file:
             raise CollectionError("SOURCE_ARGUMENTS")
-    elif not args.request_file or any((args.source_repository, args.sstd_base, args.sstd_path)):
+    elif not args.request_file or any((args.source_repository, args.sstd_base, args.sstd_path,
+                                      getattr(args, "sstd_context", None))):
         raise CollectionError("REQUEST_ARGUMENTS")
     contexts = selected_paths(args.sstc_context)
     sstd_paths = selected_paths(args.sstd_path) if is_sstd else []
@@ -344,6 +345,9 @@ def collect(args: argparse.Namespace) -> bool:
     bundle = Bundle(task, revision)
     if source:
         source_diff(bundle, source, args.sstd_base, sstd_paths)
+        for path in selected_paths(getattr(args, "sstd_context", None) or []):
+            target = bundle.manifest["input_context"]["sstd_revision"]
+            bundle.add("supporting", "SSTD", target, path, source.file(target, path))
     else:
         check_path(args.request_file.name)
         if args.request_file.is_symlink():

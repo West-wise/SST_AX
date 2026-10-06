@@ -3,7 +3,7 @@
 
 Exit 0: collected; 1: incomplete bundle; 2: rejected; 130: interrupted.
 Output: manifest.json and evidence/e0001.txt etc., in stable sorted order.
-Limits: 64 KiB/evidence, 1 MiB retained total, 64 records.
+Limits: 64 KiB/evidence, 1 MiB retained total, 128 records.
 Manual context selection does not prove semantic sufficiency.
 """
 from __future__ import annotations
@@ -32,6 +32,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--source-repository", type=Path, help="SSTD_CHANGE only")
     parser.add_argument("--sstd-base", help="SSTD_CHANGE: explicit commit/ref or ROOT")
     parser.add_argument("--sstd-path", action="append", help="SSTD_CHANGE: exact file; repeatable")
+    parser.add_argument("--sstd-context", action="append", help="SSTD_CHANGE: pinned supporting source; repeatable")
     parser.add_argument("--request-file", type=Path, help="SSTC_FEATURE: UTF-8 snapshot <=64 KiB")
     return parser.parse_args(argv)
 
