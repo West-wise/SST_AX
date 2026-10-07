@@ -21,8 +21,12 @@ def main() -> int:
     parser.add_argument("--input-directory", type=Path, required=True)
     parser.add_argument("--codex", default="codex", help="Trusted Codex executable")
     parser.add_argument("--resume-approved", action="store_true",
-                        help="Verify Slack/checkpoint binding and continue the exact session read-only")
+                        help="Deprecated: resume approved implementation through run_sstc_worker.py")
     args = parser.parse_args()
+    if args.resume_approved:
+        print("CODEX_IMPACT_ERROR: use run_sstc_worker.py after approval; reanalysis requires a new Task",
+              file=sys.stderr)
+        return 2
     from codex_impact import run
     try:
         outcome = run(args.task_file, args.input_directory, args.codex, args.resume_approved)

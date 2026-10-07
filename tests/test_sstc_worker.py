@@ -15,6 +15,8 @@ import task_storage as storage
 
 ROOT = Path(__file__).resolve().parents[1]
 SESSION = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+PLAN = {"jdk": "17", "commands": ["chmod +x gradlew", "./gradlew testDebugUnitTest assembleDebug"],
+        "documents": {"AGENTS.md": {"sha256": "a" * 64, "text": "Use the CI validation."}}}
 
 
 class SstcWorkerTest(unittest.TestCase):
@@ -44,10 +46,20 @@ class SstcWorkerTest(unittest.TestCase):
         self.source = self.root / "SSTC"
         subprocess.run(["git", "init", "-q", str(self.source)], check=True)
         (self.source / "README").write_text("base\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(self.source), "add", "README"], check=True)
+        (self.source / "AGENTS.md").write_text("Use the CI validation.\n", encoding="utf-8")
+        (self.source / ".github/workflows").mkdir(parents=True)
+        (self.source / ".github/workflows/android-ci.yml").write_text(
+            "jobs:\n  build:\n    steps:\n      - uses: actions/setup-java@v4\n        with:\n          java-version: '17'\n      - run: chmod +x gradlew\n      - run: ./gradlew testDebugUnitTest assembleDebug\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.source), "add", "."], check=True)
         subprocess.run(["git", "-C", str(self.source), "-c", "user.name=Test", "-c",
                         "user.email=test@example.invalid", "commit", "-qm", "base"], check=True)
         self.revision = subprocess.check_output(["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True).strip()
+        self.manifest["input_context"]["sstc_revision"] = self.revision
+        for item in self.manifest["evidence"]:
+            if item["source"] == "SSTC":
+                item["revision"] = self.revision
+        self.result["input_context"] = copy.deepcopy(self.manifest["input_context"])
+        storage.atomic_json(self.inputs / "manifest.json", self.manifest)
         self.analysis()
         log = storage.load_json(storage.companion(self.task, "log"))
         log["codex_analysis"]["sstc_revision"] = self.revision
@@ -95,12 +107,14 @@ class SstcWorkerTest(unittest.TestCase):
             if arguments[:2] == ["rev-parse", "HEAD"]:
                 return self.revision
             return ""
-        def fake_invoke(executable, session, prompt, cwd):
+        def fake_invoke(executable, session, prompt, cwd, **kwargs):
             self.assertIn(SESSION, worker.codex_command(executable, session))
             self.assertIn(b"Do not push", prompt)
             self.assertEqual(cwd, self.worktree)
-            return 0, b'{"type":"turn.completed"}\n', None
+            return 0, self.github_events(), None
         with patch.object(worker, "git", side_effect=fake_git), patch.object(worker, "create_worktree") as add, \
+             patch.object(worker, "validation_plan", return_value=PLAN), \
+             patch("sstc_candidate.candidate_snapshot", return_value=[]), \
              patch.object(worker, "invoke", side_effect=fake_invoke), patch.object(worker, "validation", return_value=(0, "./gradlew testDebugUnitTest assembleDebug")):
             self.assertEqual(worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
                                          self.inputs, "codex"), "VALIDATED")
@@ -127,7 +141,9 @@ class SstcWorkerTest(unittest.TestCase):
     def test_dirty_source_is_preserved(self):
         (self.source / "local-notes").write_text("keep", encoding="utf-8")
         with patch.object(worker, "git", side_effect=lambda source, args, **kwargs: self.revision if args[:2] == ["rev-parse", "HEAD"] else ""), \
-             patch.object(worker, "create_worktree"), patch.object(worker, "invoke", return_value=(0, b'{"type":"turn.completed"}\n', None)), \
+             patch.object(worker, "validation_plan", return_value=PLAN), \
+             patch("sstc_candidate.candidate_snapshot", return_value=[]), \
+             patch.object(worker, "create_worktree"), patch.object(worker, "invoke", return_value=(0, self.github_events(), None)), \
              patch.object(worker, "validation", return_value=(0, "./gradlew testDebugUnitTest assembleDebug")):
             self.assertEqual(worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
                                          self.inputs), "VALIDATED")
@@ -146,15 +162,16 @@ class SstcWorkerTest(unittest.TestCase):
     def test_github_worker_records_candidate_without_local_gradle(self):
         self.pin_inputs_and_approve()
         files = [{"path": "app/src/main/Test.kt", "mode": "100644", "sha256": "a" * 64}]
-        def fake_invoke(executable, session, prompt, cwd):
+        def fake_invoke(executable, session, prompt, cwd, **kwargs):
             self.assertEqual(session, SESSION)
             self.assertEqual(cwd, self.worktree)
             self.assertIn(b"do not run local Android build, test, or lint", prompt)
             self.assertIn(b"GitHub Actions", prompt)
             self.assertIn(b"Do not push or create a PR", prompt)
-            self.assertNotIn(b"./gradlew", prompt)
+            self.assertIn(b"target_guidance", prompt)
             return 0, self.github_events(), None
         with patch.object(worker, "git", return_value=""), patch.object(worker, "create_worktree"), \
+             patch.object(worker, "validation_plan", return_value=PLAN), \
              patch.object(worker, "invoke", side_effect=fake_invoke), patch.object(worker, "validation") as build, \
              patch("sstc_candidate.candidate_snapshot", return_value=files) as snapshot:
             self.assertEqual(worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
@@ -194,7 +211,10 @@ class SstcWorkerTest(unittest.TestCase):
         add.assert_not_called()
 
     def test_github_conflicting_analysis_revision_is_rejected(self):
-        # The local fixture deliberately pins analysis and manifest to different revisions.
+        log = storage.load_json(storage.companion(self.task, "log"))
+        log["codex_analysis"]["sstc_revision"] = "b" * 40
+        storage.save_pair(self.task, storage.load_json(self.task), log)
+        self.approve()
         with patch.object(worker, "create_worktree") as add, patch.object(worker, "git") as git:
             with self.assertRaisesRegex(ValueError, "PINNED_REVISION_REQUIRED"):
                 worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
@@ -215,6 +235,7 @@ class SstcWorkerTest(unittest.TestCase):
     def test_github_rejected_candidate_is_not_implemented(self):
         self.pin_inputs_and_approve()
         with patch.object(worker, "git", return_value=""), patch.object(worker, "create_worktree"), \
+             patch.object(worker, "validation_plan", return_value=PLAN), \
              patch.object(worker, "invoke", return_value=(0, self.github_events(), None)), \
              patch.object(worker, "validation") as build, \
              patch("sstc_candidate.candidate_snapshot", side_effect=ValueError("HEAD_OR_BRANCH_CHANGED")):
@@ -230,17 +251,19 @@ class SstcWorkerTest(unittest.TestCase):
     def test_github_failed_codex_skips_snapshot_and_build(self):
         self.pin_inputs_and_approve()
         with patch.object(worker, "git", return_value=""), patch.object(worker, "create_worktree"), \
+             patch.object(worker, "validation_plan", return_value=PLAN), \
              patch.object(worker, "invoke", return_value=(1, b'{"type":"turn.failed"}\n', None)), \
-             patch.object(worker, "validation") as build, patch("sstc_candidate.candidate_snapshot") as snapshot:
+             patch.object(worker, "validation") as build, patch("sstc_candidate.candidate_snapshot", return_value=[]) as snapshot:
             self.assertEqual(worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
                                          self.inputs, validation_mode="github"), "CODEX_FAILED")
         build.assert_not_called()
-        snapshot.assert_not_called()
+        snapshot.assert_called_once_with(self.worktree, self.revision, "ax/sstc-sync/demo")
+        self.assertNotIn("candidate_files", self.pair()[1]["codex_worker"])
 
     def test_github_real_worktree_records_untracked_source_and_refuses_replay(self):
         self.pin_inputs_and_approve()
         content = "package example\nclass Test\n"
-        def fake_invoke(executable, session, prompt, cwd):
+        def fake_invoke(executable, session, prompt, cwd, **kwargs):
             added = cwd / "app/src/main/java/Test.kt"
             added.parent.mkdir(parents=True)
             added.write_text(content, encoding="utf-8")
@@ -256,7 +279,7 @@ class SstcWorkerTest(unittest.TestCase):
                 (self.worktree / "app/src/main/java/Test.kt").read_bytes()).hexdigest()}])
         self.assertEqual(worker.git(self.source, ["rev-parse", "HEAD"]), self.revision)
         with patch.object(worker, "create_worktree") as add:
-            with self.assertRaisesRegex(ValueError, "STALE_APPROVAL"):
+            with self.assertRaisesRegex(ValueError, "EXPLICIT_RESUME_REQUIRED"):
                 worker.run(self.task, self.source, self.root / "another-worktree", "ax/sstc-sync/another",
                            self.inputs, validation_mode="github")
         add.assert_not_called()
@@ -278,6 +301,7 @@ class SstcWorkerTest(unittest.TestCase):
     def test_github_missing_session_event_skips_candidate_and_validation(self):
         self.pin_inputs_and_approve()
         with patch.object(worker, "git", return_value=""), patch.object(worker, "create_worktree"), \
+             patch.object(worker, "validation_plan", return_value=PLAN), \
              patch.object(worker, "invoke", return_value=(0, b'{"type":"turn.completed"}\n', None)), \
              patch.object(worker, "validation") as build, patch("sstc_candidate.candidate_snapshot") as snapshot:
             self.assertEqual(worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",

@@ -1,0 +1,8 @@
+{
+  "sstd_repository": "/home/ax-runner/workspace/Server_State_Telemetry_Demon",
+  "sstc_repository": "/home/ax-runner/workspace/Server_State_Telemetry_Client",
+  "state_directory": "/home/ax-runner/workspace/SST_AX/state",
+  "worktree_directory": "/home/ax-runner/worktrees",
+  "poll_seconds": 30,
+  "bootstrap_sstd_base": "ROOT"
+}

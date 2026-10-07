@@ -1,104 +1,20 @@
 # 승인 및 변경 영향 Workflow
 
-## 초기 범위
+SSTD main/Release와 독립 SSTC `[AX]` Issue는 Task 생성 이후 수집·분석·정책 판정·구현·검증·Draft PR을 공유합니다. JSON 검증의 성공만으로 실행하지 않습니다.
 
-초기 자동화는 **SSTC Draft PR 생성까지**로 제한한다.
+| 검증된 결과 | 처리 |
+|---|---|
+| NOT_REQUIRED | SSTC 수정 없이 COMPLETED, 근거 보존 |
+| UNDETERMINED / UNKNOWN / 미해결 질문 | 중단·부족 문맥 기록, 자동 완료·구현 금지 |
+| REQUIRED, 승인 영향 없는 LOW/MEDIUM | 검증된 정책 실행 근거로 구현 |
+| HIGH 또는 UI/protocol/dependency/permission/destructive | 사유·checkpoint 저장 후 WAITING_APPROVAL |
+| CRITICAL | 자동 구현 금지·사람 검토 |
+| SSTC 요청에 새 SSTD 계약 필요 | PROTOCOL_APPROVAL_REQUIRED |
 
-AI는 SSTD 변경을 분석하고 SSTC branch에 수정한 뒤 검증 결과를 포함한 Draft PR을 생성할 수 있다. `main` merge, Release, production 배포는 자동화 범위에 포함하지 않는다.
+이미 바뀐 SSTD 계약에 맞추는 SSTC 수정은 protocol 승인 후 허용합니다. SSTD 계약 쓰기는 허용하지 않습니다. 후보 게시 범위 밖의 dependency·permission 등은 승인만으로 허용 범위를 확대하지 않습니다.
 
-## 처리 흐름
+Slack 메시지는 승인 snapshot에 결합된 결과를 다시 검사하여 출처·base/head·SSTC 기준·위험도·사유·요약·영향·질문을 표시합니다. 원시 로그나 인증정보를 보내지 않고, 분석에 없는 추천안을 만들어 표시하지 않습니다. 하나의 Socket Mode 연결에서 대기 Task별 nonce를 구분합니다.
 
-```text
-SSTD main 또는 Release 감지
-  ↓
-변경 영향 분석
-  ├─ NONE/LOW: 사전 승인 없이 분석·검증
-  ├─ MEDIUM: 구현 후 Draft PR
-  ├─ HIGH: Slack 승인 후 구현
-  └─ CRITICAL: AI 제안만 작성, 사람 결정
-  ↓
-SSTC 수정 → build/test/lint → read-only review
-  ↓
-ax/sstc-sync/* branch의 Draft PR 생성
-  ↓
-사람이 review 및 merge
-```
+workspace·app·channel·허용 사용자·message ID·nonce·24시간 만료·snapshot이 맞을 때만 결정 저장 후 ack합니다. 승인 후 같은 구현 세션을 재개하며 거절은 REJECTED입니다. 승인 근거와 실행 기록은 분리하고, 입력·결과·범위가 바뀌면 이전 권한을 재사용하지 않습니다.
 
-## 작업 입력 경로
-
-```text
-SSTD main/Release ──→ SSTD Change Handler ──┐
-                                           ├→ 공통 Task Workflow
-SSTC Issue/기능 요청 → SSTC Feature Handler ─┘
-```
-
-`SSTD Change Handler`는 SSTD와 SSTC 사이의 protocol·data model 영향 분석을 수행한다. `SSTC Feature Handler`는 기능 목적, acceptance criteria, UI 영향, protocol/dependency 변경 여부를 입력으로 받아 SSTC 자체 기능 작업을 생성한다.
-
-SSTC 기능 요청이 protocol 변경을 요구하면 일반 기능 작업으로 계속 진행하지 않고 `PROTOCOL_APPROVAL_REQUIRED` 상태로 전환한다.
-
-## 영향 등급
-
-| 등급 | 예시 | 자동화 정책 |
-|---|---|---|
-| NONE | 내부 logger, build 정리 | 분석만 수행하거나 자동 PR |
-| LOW | 문서, 포맷, 테스트 | 자동 수행 가능 |
-| MEDIUM | DTO, parser, repository, ViewModel | 구현 후 Draft PR, review 필수 |
-| HIGH | protocol, crypto, threading, 저장소 migration, UI 정책 | Slack 승인 후 구현 |
-| CRITICAL | 인증 우회, secret, signing, production 배포, destructive migration | AI 자동 실행 금지 |
-
-## UI Decision Gate
-
-UI 영향이 감지되면 기술 계층 수정 전에 작업을 중지하고 Slack 승인 요청을 보낸다.
-
-승인 요청에는 다음을 포함한다.
-
-- SSTD source commit 또는 Release
-- 감지된 변경과 영향 계층
-- 기존 SSTC 화면
-- UI 선택지와 장단점
-- 추천안
-- 작업 branch와 task ID
-
-승인·거절·수정 요청은 task ID에 연결하며, Codex 프로세스는 대기하지 않고 종료한다. 승인 후 checkpoint를 사용해 새 실행을 시작한다.
-
-## 상태
-
-```text
-RECEIVED → ANALYZING → WAITING_APPROVAL
-                         ├→ REJECTED
-                         └→ IMPLEMENTING → VALIDATING
-                                             ├→ BUILD_FAILED / TEST_FAILED / SECURITY_REVIEW_FAILED
-                                             └→ READY_FOR_REVIEW
-```
-
-상태의 정의와 허용 전이는 [`Task 상태 규약`](task-state.md)을 기준으로 한다.
-`UI_APPROVAL_REQUIRED` 같은 별도 상태를 만들지 않고, UI 변경 승인은
-`WAITING_APPROVAL` 상태와 승인 사유 `UI_CHANGE`로 기록한다.
-
-## 결과 보고서
-
-모든 작업은 다음 항목을 기록한다.
-
-- Trigger와 입력 commit/Release
-- 감지된 변경과 영향 분석
-- 사람의 결정이 필요한 항목
-- 수정 파일
-- 실행한 build/test/lint/security 검증
-- 미검증 영역과 Agent confidence
-- 최종 Draft PR
-
-## Slack 일일 보고
-
-일일 보고는 승인 요청과 별도의 운영 알림이다. 보고 메시지 자체에는 작업을 승인·거절하는 실행 버튼을 포함하지 않으며, 승인 판단은 별도의 승인 요청 메시지에서만 수행한다.
-
-일일 보고에는 다음을 포함한다.
-
-- 보고 기준일과 시간대
-- 새로 수신한 SSTD commit/Release
-- 영향 분석 완료·실패 건수
-- 승인 대기·거절·승인 건수
-- 구현 중·검증 실패·완료 task
-- 생성된 Draft PR과 현재 상태
-- 다음날 처리 예정과 운영상 주의사항
-
-보고 대상이 없더라도 `변경 없음`을 명시해 Controller가 정상 동작했음을 구분한다. 집계 오류나 Slack 전송 실패는 작업 실패와 구분하여 운영 로그에 기록한다.
+후보 SHA의 Actions와 run·attempt·artifact receipt가 모두 맞아야 Draft PR을 만듭니다. 승인이나 형식·컴파일 성공은 의미적 정확도, merge·Release·배포 권한이 아닙니다. 패킷·단위 테스트와 의미 평가를 사용하고 실제 기기 UI 확인은 사람에게 남깁니다.

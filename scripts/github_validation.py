@@ -40,7 +40,7 @@ def digest(document) -> str:
 class GitHub:
     """Controller-only gh credentials; stdout/stderr and tokens are never logged."""
 
-    def api(self, endpoint: str, payload: dict | None = None, *, binary=False):
+    def api(self, endpoint: str, payload: dict | None = None, *, binary=False, timeout=30):
         command = ["gh", "api", "--hostname", "github.com", "-H",
                    "X-GitHub-Api-Version:2026-03-10", "--method",
                    "POST" if payload is not None else "GET", endpoint]
@@ -50,7 +50,7 @@ class GitHub:
         env.pop("GH_DEBUG", None)
         env["GH_PROMPT_DISABLED"] = "1"
         result = subprocess.run(command, input=json.dumps(payload).encode() if payload is not None else None,
-                                capture_output=True, env=env, timeout=30, check=False)
+                                capture_output=True, env=env, timeout=timeout, check=False)
         require(result.returncode == 0, "GITHUB_API_FAILED")
         require(len(result.stdout) <= (MAX_ARCHIVE if binary else 1_048_576), "GITHUB_RESPONSE_LIMIT")
         return result.stdout if binary else decode_document(result.stdout)

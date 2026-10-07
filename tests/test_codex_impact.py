@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -72,7 +73,7 @@ class CodexImpactTest(unittest.TestCase):
             {"type": "turn.completed"}])
 
     def execute(self, *, approved=False, outcome=None, result=None, session=SESSION):
-        def fake(args, prompt, cwd, on_session):
+        def fake(args, prompt, cwd, on_session, **kwargs):
             self.last_args = args
             self.assertIn(b"untrusted data", prompt)
             self.assertEqual(list(cwd.iterdir()), [cwd / "schema.json"])
@@ -223,6 +224,75 @@ class CodexImpactTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.execute()
         self.assertEqual(self.pair()[0]["attempt"], 3)
+
+    def test_next_analysis_uses_remaining_shared_time_and_cannot_claim_success_after_exhaustion(self):
+        import execution_policy as policy
+        self.assertEqual(self.execute(outcome="TIMEOUT"), "TIMEOUT")
+        output = storage.companion(self.path, "execution")
+        budget = storage.load_json(output)
+        budget["active_seconds"] = 1700
+        storage.atomic_json(output, budget)
+        with patch.object(policy.time, "monotonic", return_value=10) as clock:
+            def final(args, prompt, cwd, on_session, **kwargs):
+                self.assertEqual(kwargs["timeout"], 100)
+                on_session(SESSION)
+                clock.return_value = 111
+                return 0, self.events(), None
+            with patch.object(worker, "preflight"), patch.object(worker, "invoke", side_effect=final):
+                self.assertEqual(worker.run(self.path, self.inputs, "codex"), "EXECUTION_BUDGET_EXHAUSTED")
+        state, log = self.pair()
+        self.assertEqual(state["status"], "ANALYSIS_FAILED")
+        self.assertEqual(log["codex_analysis"]["outcome"], "EXECUTION_BUDGET_EXHAUSTED")
+        self.assertEqual(storage.load_json(output)["active_seconds"], 1801)
+
+    def test_exhausted_budget_stops_before_another_analysis_transport(self):
+        storage.atomic_json(storage.companion(self.path, "execution"), {
+            "active_seconds": 1800, "attempts": 0, "write_steps": 0})
+        with patch.object(worker, "invoke") as invoke, self.assertRaisesRegex(ValueError, "EXECUTION_BUDGET_EXHAUSTED"):
+            worker.run(self.path, self.inputs, "codex")
+        invoke.assert_not_called()
+        self.assertEqual(self.pair()[0]["status"], "ANALYSIS_FAILED")
+        storage.load_checkpoint(self.path, *self.pair())
+
+    def test_preflight_help_calls_share_remaining_deadline_and_stop_without_analysis(self):
+        import execution_policy as policy
+        storage.atomic_json(storage.companion(self.path, "execution"), {
+            "active_seconds": 1799, "attempts": 0, "write_steps": 0})
+        timeouts = []
+        with patch.object(policy.time, "monotonic", return_value=10) as clock:
+            def help_result(command, **kwargs):
+                timeouts.append(kwargs["timeout"])
+                if len(timeouts) == 1:
+                    clock.return_value = 10.75
+                    return subprocess.CompletedProcess(command, 0,
+                        b"--ignore-user-config --ignore-rules --output-schema --json")
+                clock.return_value = 11.1
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            with patch.object(worker.subprocess, "run", side_effect=help_result), \
+                    patch.object(worker, "invoke") as invoke:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    worker.run(self.path, self.inputs, "codex")
+        self.assertEqual(timeouts, [1, 0.25])
+        invoke.assert_not_called()
+        state, log = self.pair()
+        self.assertEqual(state["status"], "ANALYSIS_FAILED")
+        self.assertEqual(log["stop_reason"], "EXECUTION_BUDGET_EXHAUSTED")
+        storage.load_checkpoint(self.path, state, log)
+
+    def test_deprecated_approved_cli_preserves_approval_and_never_launches_transport(self):
+        import run_codex_impact as cli
+        self.execute()
+        self.approve()
+        before = self.pair()
+        checkpoint = storage.checkpoint_path(self.path).read_bytes()
+        arguments = ["run_codex_impact.py", "--task-file", str(self.path),
+                     "--input-directory", str(self.inputs), "--resume-approved"]
+        with patch.object(sys, "argv", arguments), patch.object(sys, "stderr", io.StringIO()), \
+             patch.object(worker, "invoke") as invoke:
+            self.assertEqual(cli.main(), 2)
+        invoke.assert_not_called()
+        self.assertEqual(self.pair(), before)
+        self.assertEqual(storage.checkpoint_path(self.path).read_bytes(), checkpoint)
 
     def test_session_mismatch_is_failure_without_new_session_fallback(self):
         self.execute()

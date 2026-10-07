@@ -1,226 +1,29 @@
-# SST-AX 운영 설계
+# 운영과 복구
 
-## 실행 방식
+기본 실행은 [Controller](controller.md)이며 수동 CLI는 점검·복구에 사용합니다. 각 Task는 별도 branch·worktree를 사용합니다.
 
-초기 Worker는 Codex CLI의 `codex exec`를 호출한다. Controller의 `SSTD Change Handler` 또는 `SSTC Feature Handler`가 입력과 task prompt를 준비하고, Worker는 전용 workspace에서 분석·수정·검증을 수행한다.
+| 기록 | 용도 |
+|---|---|
+| Task state / log | 상태·전이·정제된 명령 receipt·미해결 사항 |
+| manifest / evidence | 고정 SHA·요청·실제 본문 해시 |
+| 분석 / Codex checkpoint | 결과·세션·시도·입력 결합 |
+| 승인 checkpoint / 감사 기록 | 승인 당시 범위와 사람의 결정 |
+| execution-authority | 정책 허용 또는 Slack 승인·입력·결과·세션 결합 |
+| execution checkpoint | 누적 예산·재시도·작업 공간 재개 |
+| pipeline / GitHub receipt | 후보·run·attempt·artifact·Draft PR 결합 |
 
-```text
-Controller
-  ↓
-codex exec --sandbox read-only  # 영향 분석
-  ↓
-승인 또는 자동 진행
-  ↓
-codex exec --sandbox workspace-write  # 승인된 수정
-  ↓
-Gradle build/test/lint
-  ↓
-read-only review
-  ↓
-Draft PR
-```
-
-Codex가 Slack이나 승인 응답을 기다리며 장시간 살아 있지 않도록 한다. 승인 대기 시 checkpoint를 저장하고 프로세스를 종료한 뒤, 승인 결과와 checkpoint로 새 실행을 시작한다.
-
-## 상태 저장
-
-초기 PoC는 local state로 시작할 수 있다. 구현이 안정화되면 SST-AX의 상태 저장 정책을 확정한다.
-
-```json
-{
-  "task_id": "sstc-feature-<YYYYMMDD>-<sequence>",
-  "source_type": "SSTC_FEATURE",
-  "source_reference": "<issue-url>",
-  "status": "WAITING_APPROVAL",
-  "risk_level": "HIGH",
-  "created_at": "<ISO-8601 timestamp>",
-  "updated_at": "<ISO-8601 timestamp>",
-  "attempt": 0,
-  "branch": "ax/sstc-sync/<name>",
-  "checkpoint_path": "state/checkpoints/<task-id>.json",
-  "approval_reason": "UI_CHANGE"
-}
-```
-
-상태 파일에는 secret을 저장하지 않는다. task ID를 Slack 요청, 실행 로그, branch, PR에 공통으로 사용한다.
-
-## Slack 일일 보고 운영
-
-승인 버튼의 OCI 연결 실험은 [Slack 빠른 시작](slack-quickstart.md)을 따른다.
-아래 일일 보고는 아직 별도 구현이 필요한 운영 계획이다.
-
-Report Generator는 Controller의 task state, 실행 로그의 요약 정보, GitHub PR 상태를 집계해 지정된 시간에 Slack 운영 채널로 전송한다. 보고서에서 `SSTD Change Handler` 작업과 `SSTC Feature Handler` 작업을 구분한다. 기본 시간대는 `Asia/Seoul`로 하되 구현 시 설정값으로 명시한다.
-
-권장 보고 형식:
-
-```text
-[SST-AX Daily Report] 2026-09-01 (Asia/Seoul)
-
-- SSTD source: v2.0.0 / <commit>
-- SSTD change tasks: 2
-- SSTC feature tasks: 1
-- analyzed: 3
-- waiting approval: 1
-- validation failed: 0
-- Draft PR created: 2
-- next actions: UI 승인 1건 확인 필요
-```
-
-운영 규칙:
-
-- 승인 요청은 발생 즉시 전송하고 일일 보고에 다시 요약한다.
-- 보고에는 task ID, 상태, PR 링크 등 추적 가능한 정보만 포함한다.
-- 처리 건수가 0이어도 `변경 없음` 보고를 전송한다.
-- 같은 날짜·범위의 재시도는 중복 게시하지 않는다.
-- 집계 실패와 Slack 전송 실패는 별도 상태로 기록하고 재시도한다.
-- Slack 장애가 자동화 작업의 성공·실패 상태를 변경하지 않도록 분리한다.
-
-## 검증 Gate
-
-SSTD는 기존 GitHub Actions 검증을 기준으로 삼는다.
-
-```text
-Configure → Compile → multi-client test → amd64/aarch64 build
-```
-
-SSTC 자동 PR은 다음을 통과해야 한다.
-
-```text
-Gradle build → unit test → lint → protocol parser test
-→ state/ViewModel test → UI test when applicable
-```
-
-Writer 실행 뒤에는 요구사항, unrelated change, regression, security, test gap, protocol mismatch를 확인하는 read-only review를 수행한다.
-
-## 실패와 rollback
-
-실패를 숨기고 다음 단계로 진행하지 않는다. 상태의 전체 정의와 허용되는 상태 전이(작업 상태 변경)는
-[`Task 상태 규약`](task-state.md)을 기준으로 한다.
-
-| 상태 | 의미 | 처리 | rollback 기준 |
-|---|---|---|---|
-| `ANALYSIS_FAILED` | 신뢰할 수 있는 영향 분석 실패 | 증적 보존 후 사람에게 에스컬레이션 | 대상 저장소 변경 없음 |
-| `IMPLEMENTATION_FAILED` | SSTC 구현 실패 | 마지막 checkpoint와 실패 출력을 보존 | 격리된 worktree만 정리 가능 |
-| `BUILD_FAILED` | 빌드 검증 실패 | Draft PR 생성 금지, 실패 증적 보존 | `main` rollback 없음 |
-| `TEST_FAILED` | 테스트 검증 실패 | Draft PR 생성 금지, 실패 증적 보존 | `main` rollback 없음 |
-| `SECURITY_REVIEW_FAILED` | 보안 검토 실패 | 작업 중단 및 사람 검토 요청 | 변경은 격리 상태 유지 |
-| `WAITING_APPROVAL` | 사람 승인 대기 | checkpoint와 승인 사유 저장 후 프로세스 종료 | 실행 변경 없음 |
-| `DEFERRED_RATE_LIMIT` | Codex 사용량 제한 | checkpoint 저장 후 reset 시각 이후 재개 | busy-retry 금지 |
-| `PROTOCOL_APPROVAL_REQUIRED` | SSTD protocol/contract 결정 필요 | SSTC 구현 중지 후 사람 결정 요청 | 실행 변경 없음 |
-| `READY_FOR_REVIEW` | 검증을 통과한 Draft PR 대기 | 사람 review로 전달 | 자동 rollback 없음 |
-
-자동화 변경은 branch/worktree에 격리한다. 실패 시 먼저 diff·로그·checkpoint를 보존한 뒤 해당 worktree와 branch를 정리할 수 있으며, `main`에 대한 rollback은 수행하지 않는다.
-
-## SSTD Release와의 관계
-
-SSTD의 Release 및 production 배포는 SST-AX가 수행하지 않는다.
-
-```text
-SSTD main
-  ↓
-GitHub Actions test/build/package/Release
-  ↓
-Jenkins가 Release asset 다운로드·검증·배포
-```
-
-SST-AX는 SSTD Release 또는 승인된 source commit을 입력으로 받아 SSTC Draft PR을 생성하는 역할에 집중한다.
-
-## 운영 지표
-
-- 영향 분석부터 Draft PR까지의 소요 시간
-- 자동화 작업 성공·실패율
-- 검증 실패 유형
-- 사람 승인 대기 시간
-- PR 수정·반려 비율
-- Codex 실행 횟수와 사용량
-- false positive/negative 영향 분석 비율
-- 일일 보고 생성·전송 성공률
-- 보고 지연 시간과 재시도 횟수
-# 로컬 Task 입력 (구현 완료)
-
-AI 결과의 별도 검증은 [영향 분석 결과 검증](impact-analysis.md)을 따른다.
-두 Handler 공통 규약·로컬 검증 CLI가 있으며, 기존 증적 Markdown을 manifest로
-간주하거나 검증 성공만으로 상태를 변경하지 않는다.
-
-첫 번째 실행 가능 SST-AX 경로는 로컬 전용이다. Codex, Slack, GitHub를 호출하지 않으며 SSTD/SSTC 대상 저장소에도 쓰지 않는다.
-
-SSTC 기능 요청 Task를 생성하고 상태를 검증한 뒤 초기 read-only 증적 보고서를 생성한다.
+최초 승인 checkpoint·요청·승인 직후 pair는 execution-authority에 불변 보존하고 매번 재검증합니다. 표준 checkpoint는 현재 중단·재개 상태로 갱신되지만 원래 승인 근거를 대신하지 않습니다. pair 저장 중단의 `.pending.json`은 다음 명령으로 roll-forward합니다. 저장 복구는 실행 권한을 새로 만들지 않습니다.
 
 ```bash
-python3 scripts/create_task.py \
-  --source-type SSTC_FEATURE \
-  --source-reference https://github.com/West-wise/Server_State_Telemetry_Client/issues/123 \
-  --risk-level MEDIUM
-
-python3 scripts/validate_task_state.py state/tasks/sstc-feature-YYYYMMDD-0001.json
-python3 scripts/analyze_impact.py --task-file state/tasks/sstc-feature-YYYYMMDD-0001.json
+python -B scripts/update_task_state.py --task-file state/tasks/<task-id>.json --recover
 ```
 
-SSTD 변경은 `analyze_impact.py`에 로컬로 clone된 SSTD 저장소와 source reference로 사용할 Git commit 또는 ref를 추가로 제공해야 한다.
+같은 Task의 재개는 입력·결과·세션·정책·승인과 branch·worktree·source·HEAD·diff를 검사합니다. 범위가 다르면 이전 권한을 쓰지 않습니다. 삭제·이름 변경·성공 값 편집으로 gate를 우회하지 않습니다.
 
-```bash
-python3 scripts/analyze_impact.py \
-  --task-file state/tasks/sstd-sync-YYYYMMDD-0001.json \
-  --source-repository ../Server_State_Telemetry_Demon
-```
+최대 재시도 3회, 실제 활성 실행 누적 30분, write 단계 20회를 적용하며 승인·Actions 대기는 제외합니다. 후보 파일 상한은 별도 제한입니다. 재개는 예산을 초기화하지 않습니다. 사용량 제한은 DEFERRED_RATE_LIMIT이며 실제 확인한 reset 시각 전에는 호출하지 않습니다. 분석은 기존 reset 절차, 구현은 Worker 실행 checkpoint를 사용하는 재개 절차를 따릅니다.
 
-생성되는 task state, task log, impact report는 `state/tasks/` 아래에 남으며 Git에서 무시된다. 이는 저장소 산출물이 아닌 로컬 실행 증적이다. Impact report는 결정론적 Git 증적만 담고, Codex의 의미 분석은 다음 단계에서 추가한다.
+VALIDATING에서는 Actions를 확인하고 Codex를 다시 실행하지 않습니다. 게시 응답 유실은 PUBLISH_UNCERTAIN, PR 응답 유실은 PR_UNCERTAIN으로 보존합니다. 불확실한 POST를 반복하지 않고 정확한 원격 상태로 재조정할 수 있을 때만 이어갑니다. 검증 실패에는 Draft PR을 만들지 않습니다.
 
-## Task 상태 전이
+기존 OCI `sstc-feature-20260916-0001`의 dirty worktree와 WORKER_FAILED를 보존합니다. 현재 main 빌드 성공은 그 UI 후보의 검증이 아닙니다. 원래 승인·분석·manifest·세션·branch·diff가 복원 검증될 때만 같은 Task를 재개하고, 근거 부족이나 범위 변경은 사람의 새 승인·Task 판단으로 넘깁니다.
 
-상태 순서 검사 외에 [실행 조건](task-state.md)을 적용한다. 승인 필수 구현은
-Slack Gateway를 통해서만 진행한다. 검증 결과 생성기가 없어 `READY_FOR_REVIEW`는 차단된다.
-
-`scripts/update_task_state.py`는 현재 상태에서 허용된 다음 상태로만 전이한다. 종료 상태, 승인 대기, 사용량 제한 대기는 `--reason`을 필수로 요구하며, 전이 이력과 종료 사유는 짝을 이루는 task log에 기록한다.
-
-SSTD 변경의 분석을 시작하고, SSTC 영향이 없다는 결정론적 또는 승인된 분석 결과로 종료하는 예시는 다음과 같다.
-
-```bash
-python3 scripts/update_task_state.py \
-  --task-file state/tasks/sstd-sync-YYYYMMDD-0001.json \
-  --status ANALYZING
-
-python3 scripts/update_task_state.py \
-  --task-file state/tasks/sstd-sync-YYYYMMDD-0001.json \
-  --status COMPLETED \
-  --reason "SSTC 영향 없음"
-```
-
-`RECEIVED → COMPLETED`처럼 단계를 건너뛰는 전이와 종료 상태에서의 재개는 거부된다.
-
-## 로컬 checkpoint와 저장 복구
-
-사용량 제한 시 실제 확인한 reset 시각을 한국 표준시(KST, UTC+09:00)로 환산해
-지정한다. 아래는 한국 시각 2026년 9월 11일 오후 2시를 나타내는 예시이며,
-끝의 `+09:00`은 UTC보다 9시간 빠른 한국 시각임을 뜻한다.
-
-```bash
-python3 scripts/update_task_state.py \
-  --task-file state/tasks/sstc-feature-YYYYMMDD-0001.json \
-  --status DEFERRED_RATE_LIMIT --reason "Codex usage unavailable" \
-  --deferred-until 2026-09-11T14:00:00+09:00
-```
-
-checkpoint는 `state/checkpoints/<task-id>.json`에 저장하며 입력 reference,
-대기 상태, 전체 전이 로그, 중단했던 단계를 담는다. 커스텀 task 디렉터리에서는
-그 부모의 `checkpoints/`에 저장한다. reset 이후 기존 `--status` 명령으로
-중단했던 단계에 재진입하면 checkpoint 일치와 시각을 검사한다.
-
-Task 생성·전이는 OS 파일 잠금으로 같은 Task의 동시 쓰기를 거부한다.
-state/log를 바꾸기 전에 `<task-id>.pending.json`에 변경할 쌍을 기록한다.
-저장 중단으로 pending 파일이 남으면 추가 전이를 거부하므로 다음으로 복구한다.
-
-```bash
-python3 scripts/update_task_state.py \
-  --task-file state/tasks/sstc-feature-YYYYMMDD-0001.json --recover
-```
-
-복구는 pending의 state/log를 완성하는 roll-forward이며, 새 전이를 추가하거나
-Codex를 실행하지 않는다. 반복 실행해도 전이 로그가 늘어나지 않는다.
-checkpoint 불일치·손상은 임의 복원하지 않고 중단한다. checkpoint 저장 직후
-pending 작성 전에 종료됐다면 기존 state/log가 유지되며 전이를 재요청할 수 있다.
-
-현재 보장 범위는 로컬 Task 메타데이터와 프로세스 중단 복구다. SSTC Git revision,
-diff, worktree 복원, 운영체제 장애·전원 손실 내구성, 실제 Slack·OCI 연결은 미검증이다.
-Slack 승인자·메시지·checkpoint 검증은 가짜 응답을 사용한 로컬 테스트로 확인한다.
-상태 저장 영역은 Controller 전용으로 관리해야 하며 Worker 쓰기 권한에서 제외한다.
+SSTD CI는 테스트·빌드, 수동 Release workflow는 패키징을 담당합니다. Jenkins 배포는 기본 OFF인 선택 옵션에 따릅니다. AX는 SSTD 변경·Release·운영 배포를 수행하지 않습니다. 자동 종료는 수정 없는 COMPLETED 또는 검증된 Draft PR의 READY_FOR_REVIEW입니다. 일일 보고·운영 지표는 이 종료 조건과 분리합니다.

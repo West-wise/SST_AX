@@ -1,5 +1,9 @@
 # SST-AX Harness Assessment
 
+> 이 문서의 점수·미구현 목록은 각 기준일의 이력이다. 현재 완료 기준은
+> [README](../README.md)와 [Controller](controller.md), 2026-10-06
+> [목표 감사](original-goal-audit-20261006.md)를 사용한다. 역사적 점수를 현재 운영 성공률로 읽지 않는다.
+
 ## 2026-09-10 상태·복구 보강
 
 기존 아래 평가는 초기 기준선이다. 현재 로컬 CLI는 위험도·승인 사유에 따른

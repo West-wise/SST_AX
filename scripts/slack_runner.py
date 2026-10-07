@@ -9,6 +9,7 @@ import re
 import sys
 from pathlib import Path
 from threading import Event
+from time import monotonic
 
 sys.dont_write_bytecode = True
 
@@ -30,15 +31,36 @@ def configuration(environ):
     return config
 
 
-def approval_message(record):
-    # Only Controller-generated identifiers are sent; no source text or raw logs.
+def approval_message(record, review=None):
+    def bounded(value, limit=480):
+        # Plain text blocks cannot execute embedded Markdown or mention syntax.
+        return " ".join(str(value or "없음").split())[:limit]
+
     text = ("SST-AX 승인 요청: " + record["task_id"] +
-            "\n현재 Task와 checkpoint의 작업 범위를 검토한 후 선택하세요."
             "\n승인은 구현 단계 진입만 허용합니다. 만료: " + record["expires_at"])
+    sections = [text]
+    if review:
+        context = review["input_context"]
+        sections.append(
+            "출처: " + bounded(review["source_type"], 32) + " / " +
+            bounded(review["source_reference"], 220) +
+            "\nSSTD: " + bounded(context.get("sstd_base_revision"), 40) + " → " +
+            bounded(context.get("sstd_revision"), 40) +
+            "\nSSTC 기준: " + bounded(context.get("sstc_revision"), 40) +
+            "\n위험도: " + bounded(review["risk_level"], 16) +
+            "\n승인 사유: " + bounded(review["approval_reason"], 160) +
+            "\n분석 요약·수정 범위: " + bounded(review["summary"], 800))
+        affected = [key + ": " + bounded(value["reason"], 230)
+                    for key, value in review["impacts"].items()
+                    if value["status"] != "ABSENT"]
+        sections.append("영향:\n" + ("\n".join(affected) or "없음") +
+                        "\n미해결 질문: " + bounded(
+                            "; ".join(review["unresolved_questions"]), 500))
     return {
         "text": text,
         "blocks": [
-            {"type": "section", "text": {"type": "plain_text", "text": text}},
+            *[{"type": "section", "text": {"type": "plain_text", "text": section}}
+              for section in sections],
             {"type": "actions", "elements": [
                 {"type": "button", "text": {"type": "plain_text", "text": label},
                  "action_id": action, "value": record["nonce"]}
@@ -53,7 +75,7 @@ def run(args, config):
     from slack_sdk.web import WebClient
     from slack_sdk.socket_mode import SocketModeClient
     from slack_sdk.socket_mode.response import SocketModeResponse
-    from slack_approval import prepare_request, bind_message, apply_decision
+    from slack_approval import prepare_request, bind_message, apply_decision, approval_review
 
     # SDK diagnostics may contain complete responses. Emit fixed local events only.
     logger = logging.getLogger("sst_ax.slack_transport")
@@ -69,13 +91,27 @@ def run(args, config):
                               web_client=web, logger=logger, concurrency=1)
     done = Event()
     outcome = {"code": 0}
+    records = []
+    multiple = bool(getattr(args, "task_files", None))
+    timeout = getattr(args, "timeout_seconds", None)
+    if timeout is not None and (not isinstance(timeout, (int, float)) or not 0 < timeout <= 60):
+        raise ValueError("Slack polling duration must be in (0, 60]")
 
     def receive(connection, request):
         try:
             status = "IGNORED"
             if request.type == "interactive":
+                task_file = args.task_file
+                if multiple:
+                    actions = request.payload.get("actions", [])
+                    nonce = actions[0].get("value") if len(actions) == 1 else None
+                    task_file = next((path for path, record in records
+                                      if record["nonce"] == nonce), None)
+                if task_file is None:
+                    connection.send_socket_mode_response(SocketModeResponse(envelope_id=request.envelope_id))
+                    return
                 status = apply_decision(
-                    args.task_file, request.payload,
+                    task_file, request.payload,
                     team_id=config["SLACK_TEAM_ID"],
                     channel_id=config["SLACK_CHANNEL_ID"],
                     app_id=config["SLACK_APP_ID"],
@@ -85,7 +121,8 @@ def run(args, config):
             connection.send_socket_mode_response(SocketModeResponse(envelope_id=request.envelope_id))
             if status in {"IMPLEMENTING", "REJECTED"}:
                 print("TASK_STATUS=" + status, flush=True)
-                done.set()
+                if not multiple:
+                    done.set()
         except Exception:
             # Never echo a Slack response, exception body, token, or payload.
             print("SLACK_DECISION_FAILED: inspect task state; recover pending save before retry", file=sys.stderr)
@@ -94,8 +131,11 @@ def run(args, config):
 
     try:
         if args.command == "listen":
-            record = prepare_request(args.task_file, config["SLACK_TEAM_ID"],
-                                     config["SLACK_CHANNEL_ID"], config["SLACK_APP_ID"])
+            paths = args.task_files if multiple else [args.task_file]
+            for path in paths:
+                record = prepare_request(path, config["SLACK_TEAM_ID"],
+                                         config["SLACK_CHANNEL_ID"], config["SLACK_APP_ID"])
+                records.append((path, record))
             client.socket_mode_request_listeners.append(receive)
         client.connect()
         print("SLACK_CONNECTED", flush=True)
@@ -103,24 +143,38 @@ def run(args, config):
             return 0
         if done.is_set():
             return outcome["code"]
-        if not record.get("message_ts"):
-            response = web.chat_postMessage(channel=config["SLACK_CHANNEL_ID"],
-                                             **approval_message(record))
-            if response.get("channel") != config["SLACK_CHANNEL_ID"]:
-                raise ValueError("Channel mismatch")
-            bind_message(args.task_file, record["nonce"], response["ts"])
+        for path, record in records:
+            if not record.get("message_ts"):
+                review = approval_review(path, record)
+                response = web.chat_postMessage(channel=config["SLACK_CHANNEL_ID"],
+                                                 **approval_message(record, review))
+                if response.get("channel") != config["SLACK_CHANNEL_ID"]:
+                    raise ValueError("Channel mismatch")
+                bind_message(path, record["nonce"], response["ts"])
         print("SLACK_WAITING_APPROVAL", flush=True)
+        deadline = None if timeout is None else monotonic() + timeout
         while not done.wait(1):
-            pass
+            if deadline is not None and monotonic() >= deadline:
+                break
         return outcome["code"]
     finally:
         client.close()
+
+
+def listen_many(task_files, config, timeout_seconds=5):
+    """Use one Socket Mode connection to route all pending approval nonces."""
+    if not task_files:
+        return 0
+    return run(argparse.Namespace(command="listen", task_file=None,
+                                  task_files=list(task_files), timeout_seconds=timeout_seconds), config)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("command", choices=("check", "listen"))
     parser.add_argument("--task-file", type=Path)
+    parser.add_argument("--timeout-seconds", type=float,
+                        help="Return after a bounded approval poll; saved requests remain live")
     args = parser.parse_args(argv)
     if args.command == "listen" and args.task_file is None:
         parser.error("listen requires --task-file")

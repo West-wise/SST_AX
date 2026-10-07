@@ -86,7 +86,7 @@ stateDiagram-v2
 
 ## 위험도와 상태의 관계
 
-### 로컬 CLI 전이 조건 (2026-09-10)
+### CLI와 Controller 전이 조건
 
 허용 전이 표는 필요조건이며, 다음 실행 조건도 충족해야 한다.
 
@@ -95,7 +95,7 @@ stateDiagram-v2
   이 경로를 거부하며 [Slack Gateway](slack-quickstart.md)만 인증된 응답을 적용한다.
   임의 승인 JSON은 받지 않는다.
 - `READY_FOR_REVIEW`: 일반 상태 CLI는 전환을 거부한다. [SSTC pipeline](sstc-pipeline.md)이
-  승인된 구현·고정 후보 커밋·원격 검증·Draft PR receipt를 대조한 뒤 이 전이를 수행한다.
+  정책 허용 또는 승인된 구현·고정 후보 커밋·원격 검증·Draft PR receipt를 대조한 뒤 이 전이를 수행한다.
 - `WAITING_APPROVAL`, `DEFERRED_RATE_LIMIT`: state/log snapshot과 재개 단계를
   checkpoint에 먼저 저장한다. 사용량 제한은 timezone이 있는 관측된 reset 시각을
   `--deferred-until`로 지정한다. 시각을 모르면 추정해서 실행하지 않는다.
@@ -105,8 +105,9 @@ stateDiagram-v2
 - state/log의 task ID, 입력 출처, 상태가 다르면 진행하지 않는다.
 
 이는 CLI의 진행 조건이며 OS 권한 격리를 대신하지 않는다. 로컬 상태 파일을
-직접 수정할 수 있는 주체를 방어하는 인증 장치는 아니다. UI/protocol 등의
-자동 분류도 아직 없으며 입력 위험도·승인 사유가 정확해야 한다.
+직접 수정할 수 있는 주체를 방어하는 인증 장치는 아니다. Controller 실행 정책은
+검증된 분석의 위험도·승인 사유와 입력·결과·세션을 결합해 판정한다. 초기 위험도나
+일반 상태 CLI의 성공만으로 Worker를 허용하지 않는다.
 
 위험도는 현재 상태와 별개의 판단 값이다. 위험도가 높다고 상태를 임의로
 변경하지 않으며, 정책에 따라 승인 대기 또는 작업 중단으로 전이한다.

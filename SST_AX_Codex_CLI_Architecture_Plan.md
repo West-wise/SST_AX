@@ -1,5 +1,10 @@
 # SST AX Codex CLI 아키텍처 계획
 
+> 초기 구상 기록이다. 현재 동작과 완료 기준은 [README](README.md),
+> [Controller](docs/controller.md), [목표 감사](docs/original-goal-audit-20261006.md)를 따른다.
+> 자동 SSTD 입력과 독립 SSTC 요청의 분석·필요한 수정·검증·Draft PR은 기본 범위다.
+> 일일 보고·운영 지표를 이 완료 조건에 계속 추가하지 않는다.
+
 > SST-AX의 전체 설계 개요와 단계별 로드맵입니다. 세부 정책은 주제별 문서에서 관리합니다.
 
 ## 목표

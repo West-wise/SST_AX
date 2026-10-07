@@ -1,0 +1,22 @@
+{
+  "case_id": "missing-decoder",
+  "scenario_type": "counterfactual_on_pinned_source",
+  "source_context": {
+    "sstd_revision": "08f917cf853785cf026c6c32f7af244097ba3a15",
+    "sstc_revision": "2dd38fa6d8f0164f8c37d1e4c18984eccd20ad60"
+  },
+  "description": "A contract diff without required client decoder evidence cannot be labelled no impact.",
+  "evidence": {
+    "source_diff": "- uint32_t uptime_secs;\n+ uint64_t uptime_secs;",
+    "source_path": "include/Protocol.hpp",
+    "missing_required_evidence": "SSTC data/remote decoder"
+  },
+  "expected": {
+    "source_type": "SSTD_CHANGE",
+    "change_required": "UNDETERMINED",
+    "impacts": {
+      "protocol_contract": "UNKNOWN"
+    },
+    "approval_reasons": []
+  }
+}
