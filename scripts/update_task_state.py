@@ -11,7 +11,7 @@ from pathlib import Path
 
 from validate_task_state import DEFAULT_SCHEMA_PATH, load_json, validate_task_state
 from task_storage import (
-    atomic_json, checkpoint_path, companion, load_checkpoint, recover_pair,
+    companion, load_checkpoint, recover_pair,
     save_pair, task_lock, validate_pair,
 )
 
@@ -116,9 +116,7 @@ def update(args: argparse.Namespace) -> int:
         task_state.update(deferred_until=args.record_reset_at, updated_at=utc_now())
         task_log.setdefault("reset_observations", []).append({
             "reset_at": args.record_reset_at, "recorded_at": task_state["updated_at"]})
-        atomic_json(checkpoint_path(args.task_file), {
-            "state": task_state, "log": task_log, "resume_status": checkpoint["resume_status"]})
-        save_pair(args.task_file, task_state, task_log)
+        save_pair(args.task_file, task_state, task_log, checkpoint_status=checkpoint["resume_status"])
         print("RESET_TIME_RECORDED")
         return 0
 
@@ -191,11 +189,8 @@ def update(args: argparse.Namespace) -> int:
         task_log["finished_at"] = now
         task_log["stop_reason"] = args.reason
 
-    if args.status in {"WAITING_APPROVAL", "DEFERRED_RATE_LIMIT"}:
-        atomic_json(checkpoint_path(args.task_file), {
-            "state": task_state, "log": task_log, "resume_status": resume_status,
-        })
-    save_pair(args.task_file, task_state, task_log)
+    save_pair(args.task_file, task_state, task_log,
+              checkpoint_status=resume_status if args.status in {"WAITING_APPROVAL", "DEFERRED_RATE_LIMIT"} else None)
     print(f"TASK_STATUS={args.status}")
     return 0
 

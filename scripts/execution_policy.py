@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import copy
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 import time
 import threading
@@ -34,7 +34,8 @@ def transition(state: dict, log: dict, target: str, reason: str) -> None:
     log["status"] = target
     log["state_transitions"].append({"from_status": old, "to_status": target,
                                      "occurred_at": state["updated_at"], "reason": reason})
-    if target in {"COMPLETED", "ANALYSIS_FAILED", "IMPLEMENTATION_FAILED", "PROTOCOL_APPROVAL_REQUIRED"}:
+    if target in {"COMPLETED", "ANALYSIS_FAILED", "IMPLEMENTATION_FAILED", "PROTOCOL_APPROVAL_REQUIRED",
+                  "BUILD_FAILED", "TEST_FAILED", "SECURITY_REVIEW_FAILED"}:
         log.update(finished_at=utc_now(), stop_reason=reason)
 
 
@@ -172,13 +173,11 @@ def decide(task_file: Path, input_directory: Path) -> dict:
         transition(state, log, target, reason)
         log["policy_decision"] = {"decision": target, "reason": reason,
                                   "result_sha256": digest(result), "manifest_sha256": digest(analysis["manifest"])}
-        if target == "WAITING_APPROVAL":
-            atomic_json(checkpoint_path(path), {"state": state, "log": log, "resume_status": "ANALYZING"})
         if target == "IMPLEMENTING":
             prepared = make_authority(path, analysis, "POLICY", persist=False)
             atomic_json(journal, {"before": before, "after": {"state": state, "log": log}, "proof": prepared})
             make_authority(path, analysis, "POLICY")
-        save_pair(path, state, log)
+        save_pair(path, state, log, checkpoint_status="ANALYZING" if target == "WAITING_APPROVAL" else None)
         if target == "IMPLEMENTING":
             journal.unlink()
         return {"decision": target, "status": target, "reason": reason, "session_id": analysis["session_id"]}
@@ -331,8 +330,7 @@ class Budget:
 def defer(path: Path, state: dict, log: dict) -> None:
     transition(state, log, "DEFERRED_RATE_LIMIT", "CODEX_USAGE_UNAVAILABLE")
     state.update(deferred_until=None, checkpoint_path=f"state/checkpoints/{path.stem}.json")
-    atomic_json(checkpoint_path(path), {"state": state, "log": log, "resume_status": "IMPLEMENTING"})
-    save_pair(path, state, log)
+    save_pair(path, state, log, checkpoint_status="IMPLEMENTING")
 
 
 def stop_budget(path: Path, reason: str) -> None:
@@ -344,9 +342,30 @@ def stop_budget(path: Path, reason: str) -> None:
         transition(state, log, target, reason)
         log.update(stop_reason=reason, finished_at=utc_now())
         state["checkpoint_path"] = f"state/checkpoints/{path.stem}.json"
-        save_pair(path, state, log)
-        atomic_json(checkpoint_path(path), {"state": state, "log": log,
-                    "resume_status": "ANALYZING" if target == "ANALYSIS_FAILED" else "IMPLEMENTING"})
+        save_pair(path, state, log,
+                  checkpoint_status="ANALYZING" if target == "ANALYSIS_FAILED" else "IMPLEMENTING")
+
+
+def reconcile_budget(path: Path, active_seconds: float, write_steps: int) -> None:
+    """Record observed crash usage without resetting or decreasing retained counters."""
+    output = companion(path, "execution")
+    value = load_document(output)
+    binding = digest(load_document(authority_path(path))) if authority_path(path).exists() else None
+    if (value.get("task_id") != path.stem or value.get("authority_sha256") != binding or
+            type(value.get("active_seconds")) not in {int, float} or
+            not math.isfinite(value["active_seconds"]) or value["active_seconds"] < 0 or
+            any(type(value.get(key)) is not int or value[key] < 0
+                for key in ("attempts", "write_steps")) or
+            type(value.get("analysis_retries", 0)) is not int or value.get("analysis_retries", 0) < 0):
+        raise ValueError("EXECUTION_CHECKPOINT_INVALID")
+    if (type(active_seconds) not in {int, float} or not math.isfinite(active_seconds) or
+            active_seconds < value["active_seconds"] or type(write_steps) is not int or
+            write_steps < value["write_steps"]):
+        raise ValueError("OBSERVED_CRASH_BUDGET_REQUIRED")
+    value.update(active_seconds=active_seconds, write_steps=write_steps, active=False,
+                 outcome="INTERRUPTED", interruption_observation={
+                     "active_seconds": active_seconds, "write_steps": write_steps, "recorded_at": utc_now()})
+    atomic_json(output, value)
 
 
 class BudgetClient:

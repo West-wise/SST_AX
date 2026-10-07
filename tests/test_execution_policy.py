@@ -277,6 +277,30 @@ class ExecutionPolicyTest(unittest.TestCase):
             policy.Budget(self.path, "SECOND").finish("DONE")
         self.assertEqual(storage.load_json(storage.companion(self.path, "execution"))["active_seconds"], 10)
 
+    def test_crash_budget_keeps_binding_attempts_and_requires_observed_non_decreasing_usage(self):
+        policy.execution_context(self.path, self.inputs)
+        budget = policy.Budget(self.path, "IMPLEMENTING", attempt=True)
+        budget.tick(writes=2)
+        budget.finish("INTERRUPTED")
+        output = storage.companion(self.path, "execution")
+        before = storage.load_json(output)
+        for seconds, writes in ((float("nan"), 2), (False, 2), (-1, 2),
+                                (before["active_seconds"] + 1, 1),
+                                (before["active_seconds"] + 1, True)):
+            with self.assertRaisesRegex(ValueError, "OBSERVED_CRASH_BUDGET_REQUIRED"):
+                policy.reconcile_budget(self.path, seconds, writes)
+            self.assertEqual(storage.load_json(output), before)
+        policy.reconcile_budget(self.path, before["active_seconds"] + 1, 3)
+        after = storage.load_json(output)
+        for key in ("attempts", "analysis_retries", "task_id", "authority_sha256"):
+            self.assertEqual(after[key], before[key])
+        self.assertFalse(after["active"])
+        self.assertEqual(after["write_steps"], 3)
+        after["authority_sha256"] = "f" * 64
+        storage.atomic_json(output, after)
+        with self.assertRaisesRegex(ValueError, "EXECUTION_CHECKPOINT_INVALID"):
+            policy.reconcile_budget(self.path, after["active_seconds"] + 1, 4)
+
     def test_real_github_subprocess_uses_remaining_budget_and_legacy_fake_api_still_works(self):
         self.analysis()
         policy.decide(self.path, self.inputs)
