@@ -72,7 +72,7 @@ class CodexImpactTest(unittest.TestCase):
                 "text": json.dumps(self.result if result is None else result)}},
             {"type": "turn.completed"}])
 
-    def execute(self, *, approved=False, outcome=None, result=None, session=SESSION):
+    def execute(self, *, outcome=None, result=None, session=SESSION):
         def fake(args, prompt, cwd, on_session, **kwargs):
             self.last_args = args
             self.assertIn(b"untrusted data", prompt)
@@ -85,7 +85,12 @@ class CodexImpactTest(unittest.TestCase):
                 return 1, b'{"type":"turn.failed","error":{"message":"usage limit reached"}}', None
             return 0, self.events(result), outcome
         with patch.object(worker, "preflight"), patch.object(worker, "invoke", side_effect=fake):
-            return worker.run(self.path, self.inputs, "codex", approved)
+            return worker.run(self.path, self.inputs, "codex")
+
+    def approved_session(self):
+        state, log = self.pair()
+        manifest, _ = worker.bundle(state, self.inputs)
+        return worker.approved_session(self.path, state, log, manifest)
 
     def approve(self, reject=False):
         self.move("WAITING_APPROVAL", "--reason", "UI_CHANGE")
@@ -110,9 +115,14 @@ class CodexImpactTest(unittest.TestCase):
         self.script("validate_impact_result.py", "--task-file", str(self.path),
                     "--manifest-file", str(self.inputs / "manifest.json"),
                     "--result-file", str(self.path.parent / record["result_file"]))
-        self.assertEqual(self.execute(), "VALID")
-        self.assertIn("resume", self.last_args)
-        self.assertIn(SESSION, self.last_args)
+        before = self.pair()
+        budget = storage.load_json(storage.companion(self.path, "execution"))
+        with patch.object(worker, "invoke") as invoke, patch.object(worker, "preflight") as preflight:
+            self.assertEqual(worker.run(self.path, self.inputs, "codex"), "VALID")
+        invoke.assert_not_called()
+        preflight.assert_not_called()
+        self.assertEqual(self.pair(), before)
+        self.assertEqual(storage.load_json(storage.companion(self.path, "execution")), budget)
         self.assertNotIn("--last", self.last_args)
 
     def test_evidence_tampering_refuses_before_launch(self):
@@ -142,27 +152,27 @@ class CodexImpactTest(unittest.TestCase):
     def test_escaped_secret_never_persisted(self):
         result = copy.deepcopy(self.result)
         result["summary"] = "ghp_" + "A" * 30
-        self.assertEqual(self.execute(result=result), "EXECUTION_OR_RESULT_ERROR")
+        self.assertEqual(self.execute(result=result), "SECRET_CONTENT")
         for file in self.path.parent.glob("*.json"):
             self.assertNotIn(result["summary"], file.read_text(encoding="utf-8"))
 
-    def test_approved_resume_uses_exact_session_and_stays_read_only(self):
+    def test_approved_session_uses_exact_validated_read_only_analysis(self):
         self.execute()
         self.assertEqual(self.approve(), "IMPLEMENTING")
-        self.assertEqual(self.execute(approved=True), "VALID")
-        self.assertIn(SESSION, self.last_args)
-        self.assertIn("read-only", self.last_args)
+        before = self.pair()
+        self.assertEqual(self.approved_session(), SESSION)
+        self.assertEqual(self.pair(), before)
         self.assertEqual(self.pair()[0]["status"], "IMPLEMENTING")
         with self.assertRaises(ValueError):
-            self.execute(approved=True)
+            worker.run(self.path, self.inputs, "codex")
 
     def test_rejected_or_unapproved_task_cannot_resume(self):
         self.execute()
         with self.assertRaises(ValueError):
-            self.execute(approved=True)
+            self.approved_session()
         self.approve(reject=True)
         with self.assertRaises(ValueError):
-            self.execute(approved=True)
+            self.approved_session()
 
     def test_changed_result_or_session_invalidates_approval(self):
         self.execute()
@@ -171,7 +181,7 @@ class CodexImpactTest(unittest.TestCase):
         log["codex_analysis"]["session_id"] = OTHER
         storage.save_pair(self.path, state, log)
         with self.assertRaises(ValueError):
-            self.execute(approved=True)
+            self.approved_session()
 
     def test_result_hash_checked_again_after_approval(self):
         self.execute()
@@ -182,7 +192,7 @@ class CodexImpactTest(unittest.TestCase):
         changed["summary"] = "Changed after approval"
         storage.atomic_json(result_path, changed)
         with self.assertRaises(ValueError):
-            self.execute(approved=True)
+            self.approved_session()
 
     def test_analysis_resume_requires_session_checkpoint(self):
         self.execute()
@@ -198,7 +208,7 @@ class CodexImpactTest(unittest.TestCase):
         self.assertEqual(self.execute(), "PROTOCOL_APPROVAL_REQUIRED")
         self.assertEqual(self.pair()[0]["status"], "PROTOCOL_APPROVAL_REQUIRED")
         with self.assertRaises(ValueError):
-            self.execute(approved=True)
+            self.approved_session()
 
     def test_rate_limit_saves_checkpoint_and_requires_observed_reset(self):
         self.assertEqual(self.execute(outcome="RATE_LIMIT"), "RATE_LIMIT")
@@ -224,6 +234,8 @@ class CodexImpactTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.execute()
         self.assertEqual(self.pair()[0]["attempt"], 3)
+        self.assertEqual(self.pair()[0]["status"], "ANALYSIS_FAILED")
+        self.assertEqual(self.pair()[1]["stop_reason"], "ATTEMPT_LIMIT")
 
     def test_next_analysis_uses_remaining_shared_time_and_cannot_claim_success_after_exhaustion(self):
         import execution_policy as policy
@@ -295,8 +307,8 @@ class CodexImpactTest(unittest.TestCase):
         self.assertEqual(storage.checkpoint_path(self.path).read_bytes(), checkpoint)
 
     def test_session_mismatch_is_failure_without_new_session_fallback(self):
-        self.execute()
-        self.assertEqual(self.execute(session=OTHER), "EXECUTION_OR_RESULT_ERROR")
+        self.execute(outcome="TIMEOUT")
+        self.assertEqual(self.execute(session=OTHER), "SESSION_MISMATCH")
         self.assertEqual(self.pair()[1]["codex_analysis"]["session_id"], SESSION)
 
     def test_pending_pair_or_running_receipt_blocks_duplicate_execution(self):
@@ -324,7 +336,7 @@ class CodexImpactTest(unittest.TestCase):
         self.assertEqual(fault, "TIMEOUT")
         with patch.object(worker, "MAX_EVENTS", 10):
             _, _, fault = worker.invoke([sys.executable, "-c", "print('x'*100)"], b"", self.root, lambda _: None)
-        self.assertEqual(fault, "EVENT_STREAM_OR_SESSION")
+        self.assertEqual(fault, "EVENT_LIMIT")
 
     def test_flags_and_capability_refusal(self):
         args = worker.command("codex", Path("schema.json"), SESSION)
@@ -366,6 +378,154 @@ class CodexImpactTest(unittest.TestCase):
                     b'{"type":"error","type":"turn.completed"}'):
             with self.assertRaises(ValueError):
                 worker.parse_events(raw)
+
+    def test_tool_start_and_nonobject_events_are_refused(self):
+        for raw, reason in ((b'{"type":"item.started","item":{"type":"command_execution"}}', "UNEXPECTED_TOOL"),
+                            (b'[]', "EVENT_FORMAT"),
+                            (b'{"type":"item.completed","item":[]}', "EVENT_FORMAT")):
+            with self.assertRaisesRegex(ValueError, reason):
+                worker.parse_events(raw)
+
+    def test_nonfatal_error_item_can_complete_but_stream_error_cannot(self):
+        # Codex rust-v0.153.2 exec_events.rs differentiates these event types.
+        warning = worker.canonical({"type": "item.completed", "item": {
+            "type": "error", "message": "A nonfatal notice"}})
+        final, outcome = worker.parse_events(warning + b"\n" + self.events())
+        self.assertIsNone(outcome)
+        self.assertEqual(json.loads(final), self.result)
+        error = worker.canonical({"type": "error", "message": "An unrecoverable stream error"})
+        self.assertEqual(worker.parse_events(error + b"\n" + self.events())[1], "CODEX_FAILED")
+
+    def test_stream_error_and_result_failures_keep_fixed_safe_reasons(self):
+        for reason in ("UNEXPECTED_TOOL", "SESSION_MISMATCH", "INPUT_CHANGED", "RESULT_SIZE"):
+            with self.subTest(reason=reason):
+                self.assertEqual(worker.safe_reason(ValueError(reason)), reason)
+        self.assertEqual(worker.safe_reason(ValueError("password=untrusted-private-value")),
+                         "EXECUTION_OR_RESULT_ERROR")
+
+    def test_launch_failure_does_not_spend_analysis_attempt(self):
+        with patch.object(worker, "preflight"), patch.object(worker, "invoke", side_effect=FileNotFoundError):
+            self.assertEqual(worker.run(self.path, self.inputs, "missing-codex"), "EXECUTABLE_NOT_FOUND")
+        self.assertEqual(self.pair()[0]["attempt"], 0)
+        self.assertEqual(self.pair()[0]["status"], "ANALYZING")
+        self.assertEqual(self.execute(), "VALID")
+
+    def test_missing_executable_and_preflight_timeout_keep_retryable_state(self):
+        for error, outcome in ((FileNotFoundError("sensitive path"), "EXECUTABLE_NOT_FOUND"),
+                               (subprocess.TimeoutExpired("private command", 1), "PREFLIGHT_TIMEOUT")):
+            with patch.object(worker, "preflight", side_effect=error), patch.object(worker, "invoke") as invoke:
+                self.assertEqual(worker.run(self.path, self.inputs, "codex"), outcome)
+            invoke.assert_not_called()
+            self.assertEqual(self.pair()[0]["attempt"], 0)
+            self.assertEqual(self.pair()[1]["stop_reason"], outcome)
+
+    def test_launch_permission_failure_does_not_consume_attempt_or_fail_task(self):
+        with patch.object(worker, "preflight"), patch.object(worker, "invoke", side_effect=PermissionError):
+            self.assertEqual(worker.run(self.path, self.inputs, "codex"), "EXECUTABLE_UNAVAILABLE")
+        self.assertEqual(self.pair()[0]["attempt"], 0)
+        self.assertEqual(self.pair()[0]["status"], "ANALYZING")
+        self.assertEqual(self.execute(), "VALID")
+
+    def test_interrupt_before_launch_closes_active_budget_without_spending_attempt(self):
+        real_write = storage.atomic_json
+        def interrupt(path, value):
+            if path.name == "schema.json":
+                raise KeyboardInterrupt
+            real_write(path, value)
+        with patch.object(worker, "preflight"), patch.object(worker, "atomic_json", side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                worker.run(self.path, self.inputs, "codex")
+        self.assertFalse(storage.load_json(storage.companion(self.path, "execution"))["active"])
+        self.assertEqual(self.pair()[0]["attempt"], 0)
+        self.assertNotIn("codex_analysis", self.pair()[1])
+
+    def test_codex_failure_retries_same_session_and_eventually_terminates(self):
+        self.assertEqual(self.execute(outcome="CODEX_FAILED"), "CODEX_FAILED")
+        self.assertEqual(self.pair()[0]["status"], "ANALYZING")
+        self.assertEqual(self.execute(), "VALID")
+        self.assertIn(SESSION, self.last_args)
+
+    def test_keyboard_interrupt_is_saved_and_propagated(self):
+        with patch.object(worker, "preflight"), patch.object(worker, "invoke", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                worker.run(self.path, self.inputs, "codex")
+        self.assertEqual(self.pair()[1]["codex_analysis"]["outcome"], "INTERRUPTED")
+        self.assertEqual(self.pair()[0]["status"], "ANALYZING")
+        self.assertEqual(self.execute(), "VALID")
+
+    def test_missing_approval_is_a_fixed_refusal(self):
+        self.execute()
+        self.approve()
+        state, log = self.pair()
+        log.pop("approvals")
+        with self.assertRaisesRegex(ValueError, "APPROVAL_REQUIRED"):
+            worker.approved_session(self.path, state, log, self.manifest)
+
+    def test_schema_preserves_nullable_types_and_refuses_unknown_semantics(self):
+        schema = worker.output_schema(storage.load_json(worker.SCHEMA_PATH))
+        context = schema["$defs"]["input_context"]
+        self.assertEqual(context["properties"]["sstc_revision"]["type"], ["string", "null"])
+        self.assertEqual(schema["properties"]["input_context"], {"$ref": "#/$defs/input_context"})
+        for keyword in ("anyOf", "oneOf", "allOf"):
+            with self.assertRaisesRegex(ValueError, "SCHEMA_UNSUPPORTED_KEYWORD"):
+                worker.output_schema({keyword: [{"type": "string"}, {"type": "null"}]})
+
+    def test_proxy_and_ca_settings_pass_without_controller_secrets(self):
+        with patch.dict(os.environ, {"HTTPS_PROXY": "https://proxy.invalid:443",
+                                    "SSL_CERT_FILE": "/trusted/company-ca.pem",
+                                    "SLACK_BOT_TOKEN": "private"}):
+            environment = worker.worker_environment()
+        self.assertEqual(environment["HTTPS_PROXY"], "https://proxy.invalid:443")
+        self.assertEqual(environment["SSL_CERT_FILE"], "/trusted/company-ca.pem")
+        self.assertNotIn("SLACK_BOT_TOKEN", environment)
+
+    def test_bundle_defends_evidence_id_even_if_schema_walker_regresses(self):
+        for name in ("../escape", "..\\escape", "/escape", "C:escape", ".", "..", "bad\nname"):
+            self.manifest["evidence"][0]["evidence_id"] = name
+            self.write_manifest()
+            with patch.object(worker, "validate_shape", return_value=[]):
+                with self.assertRaisesRegex(ValueError, "EVIDENCE_ID"):
+                    worker.bundle(self.pair()[0], self.inputs)
+
+    def crash_analysis(self):
+        def crash(args, prompt, cwd, on_session, **kwargs):
+            kwargs["on_start"](os.getpid())
+            on_session(SESSION)
+            raise SystemExit(99)
+        with patch.object(worker, "preflight"), patch.object(worker, "invoke", side_effect=crash):
+            with self.assertRaises(SystemExit):
+                worker.run(self.path, self.inputs, "codex")
+
+    def test_running_process_cannot_be_reconciled_or_restarted(self):
+        self.crash_analysis()
+        before = self.pair()
+        with self.assertRaisesRegex(ValueError, "PROCESS_STILL_RUNNING"):
+            worker.reconcile_interrupted(self.path, self.inputs, active_seconds=30, write_steps=0)
+        self.assertEqual(self.pair(), before)
+        with self.assertRaisesRegex(ValueError, "INTERRUPTED_RUN_REQUIRES_RECONCILIATION"):
+            self.execute()
+
+    def test_stopped_process_can_be_reconciled_without_codex_or_budget_reset(self):
+        self.crash_analysis()
+        with patch.object(storage, "process_stopped", return_value=True), patch.object(worker, "invoke") as invoke:
+            self.assertEqual(worker.reconcile_interrupted(self.path, self.inputs,
+                             active_seconds=30, write_steps=0), "INTERRUPTED")
+        invoke.assert_not_called()
+        self.assertEqual(storage.load_json(storage.companion(self.path, "execution"))["active_seconds"], 30)
+        self.assertEqual(self.pair()[0]["attempt"], 1)
+        self.assertEqual(self.execute(), "VALID")
+        self.assertIn(SESSION, self.last_args)
+
+    def test_uncertain_legacy_running_analysis_can_only_be_aborted(self):
+        self.crash_analysis()
+        state, log = self.pair()
+        log["codex_analysis"].pop("process_id")
+        storage.save_pair(self.path, state, log, codex_checkpoint=True)
+        with self.assertRaisesRegex(ValueError, "PROCESS_CONFIRMATION_REQUIRED"):
+            worker.reconcile_interrupted(self.path, self.inputs, active_seconds=30, write_steps=0)
+        self.assertEqual(worker.reconcile_interrupted(self.path, self.inputs, abort=True), "ANALYSIS_FAILED")
+        with self.assertRaises(ValueError):
+            self.execute()
 
     def test_cli_errors_do_not_echo_arguments(self):
         result = self.script("run_codex_impact.py", "--secret=do-not-echo", success=False)
