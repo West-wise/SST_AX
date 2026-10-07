@@ -343,6 +343,42 @@ class SstcPipelineTest(unittest.TestCase):
         self.assertEqual(self.checkpoint.read_bytes(), self.checkpoint_bytes)
         self.assertEqual(pipeline.check(self.path, self.client), result)
 
+    def test_abort_journal_replays_before_pending_pair_exists_without_sensor_request(self):
+        self.client.overrides[PREFIX + "/git/trees"] = TimeoutError("response lost")
+        with self.assertRaises(TimeoutError):
+            self.publish()
+        before = self.pair()
+        calls = copy.deepcopy(self.client.calls)
+        with patch.object(pipeline, "save_pair", side_effect=OSError("before pending journal")), \
+                self.assertRaises(OSError):
+            pipeline.abort(self.path)
+        self.assertEqual(self.pair(), before)
+        self.assertFalse(storage.companion(self.path, "pending").exists())
+        record = storage.load_json(pipeline.record_path(self.path))
+        self.assertEqual(record["outcome"], "FINALIZING")
+        self.assertFalse(sensor.record_path(self.path).exists())
+        result = pipeline.check(self.path, self.client)
+        self.assertEqual(result["outcome"], "IMPLEMENTATION_FAILED")
+        self.assertEqual(self.pair(), (record["final_pair"]["state"], record["final_pair"]["log"]))
+        self.assertEqual(self.client.calls, calls)
+        self.assertEqual(self.checkpoint.read_bytes(), self.checkpoint_bytes)
+
+    def test_abort_replay_refuses_changes_to_the_recorded_pair(self):
+        self.client.overrides[PREFIX + "/git/trees"] = TimeoutError("response lost")
+        with self.assertRaises(TimeoutError):
+            self.publish()
+        with patch.object(pipeline, "save_pair", side_effect=OSError("before pending journal")), \
+                self.assertRaises(OSError):
+            pipeline.abort(self.path)
+        before = self.pair()
+        record = storage.load_json(pipeline.record_path(self.path))
+        record["final_pair"]["log"]["approvals"].clear()
+        record["final_snapshot"]["log"] = sensor.digest(record["final_pair"]["log"])
+        storage.atomic_json(pipeline.record_path(self.path), record)
+        with self.assertRaisesRegex(ValueError, "ABORT_TRANSITION_REFUSED"):
+            pipeline.abort(self.path)
+        self.assertEqual(self.pair(), before)
+
     def test_reconciliation_ref_mismatch_preserves_uncertain_pair(self):
         self.client.overrides[PREFIX + "/git/refs"] = TimeoutError("response lost")
         with self.assertRaises(TimeoutError):

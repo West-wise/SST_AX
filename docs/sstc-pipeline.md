@@ -116,6 +116,8 @@ python -B scripts/run_sstc_pipeline.py abort --task-file "$TASK_FILE"
 
 `abort`는 `IMPLEMENTING`을 `IMPLEMENTATION_FAILED`, `VALIDATING`을 `BUILD_FAILED`로 끝낸다.
 Task·pipeline/Sensor journal·승인 근거·원격 branch/PR을 보존하고 원격 요청을 보내지 않는다.
+중단 pair 저장 직전에 프로세스가 죽었으면 `check` 또는 `abort`를 다시 실행한다.
+저장한 원래 snapshot과 정확한 종료 pair를 대조해 같은 전이·시각으로 복구하며 Sensor 요청을 요구하지 않는다.
 실패 Task에서 구현 승인을 다시 사용하지 않는다. 후속 수정은 별도 Task로 진행한다.
 
 자동화 종료는 Draft PR과 `READY_FOR_REVIEW`다. merge·Release·production 배포는 사람이 수행한다.

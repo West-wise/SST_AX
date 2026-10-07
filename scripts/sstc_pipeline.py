@@ -229,7 +229,10 @@ def abort(task_file: Path) -> dict:
         require(record.get("task_id") == path.stem and record.get("repository") == REPOSITORY and
                 record.get("outcome") in {"PUBLISH_UNCERTAIN", "DISPATCH_UNCERTAIN", "PR_UNCERTAIN", "FINALIZING"},
                 "UNCERTAIN_PIPELINE_REQUIRED")
+        if record["outcome"] == "FINALIZING" and "abort_snapshot" in record:
+            return finish_abort(path, record, state, log)
         require(state["status"] in {"IMPLEMENTING", "VALIDATING"}, "UNCERTAIN_PIPELINE_REQUIRED")
+        record["abort_snapshot"] = snapshot(path)
         target = "IMPLEMENTATION_FAILED" if state["status"] == "IMPLEMENTING" else "BUILD_FAILED"
         transition(state, log, target, "Operator aborted unresolved remote request")
         log.update(stop_reason="PIPELINE_ABORTED", finished_at=state["updated_at"])
@@ -237,10 +240,37 @@ def abort(task_file: Path) -> dict:
             final_snapshot={"task_id": path.stem, "state": digest(state), "log": digest(log),
                 "checkpoint": snapshot(path)["checkpoint"]})
         atomic_json(record_path(path), record)
-        save_pair(path, state, log)
-        record["outcome"] = target
-        atomic_json(record_path(path), record)
-        return record
+        # Reload the unchanged pair to validate the exact journalled transition.
+        return finish_abort(path, record, *pair(path))
+
+
+def finish_abort(path: Path, record: dict, state: dict, log: dict) -> dict:
+    """Replay only the terminal abort pair; never interpret it as execution authority."""
+    intended, target = record["final_pair"], record["final_outcome"]
+    require(record.get("task_id") == path.stem and record.get("repository") == REPOSITORY and
+            target in {"IMPLEMENTATION_FAILED", "BUILD_FAILED"}, "ABORT_TRANSITION_REFUSED")
+    validate_pair(path, intended["state"], intended["log"])
+    require(intended["state"]["status"] == target and intended["log"].get("stop_reason") == "PIPELINE_ABORTED",
+            "ABORT_TRANSITION_REFUSED")
+    current = snapshot(path)
+    require(record["final_snapshot"] == {"task_id": path.stem, "state": digest(intended["state"]),
+        "log": digest(intended["log"]), "checkpoint": current["checkpoint"]}, "ABORT_TRANSITION_REFUSED")
+    if current != record["final_snapshot"]:
+        require(current == record["abort_snapshot"] and state["status"] in {"IMPLEMENTING", "VALIDATING"} and
+                target == ("IMPLEMENTATION_FAILED" if state["status"] == "IMPLEMENTING" else "BUILD_FAILED"),
+                "ABORT_CONTEXT_CHANGED")
+        expected_state, expected_log = copy.deepcopy(state), copy.deepcopy(log)
+        now = intended["state"]["updated_at"]
+        expected_state.update(status=target, updated_at=now)
+        expected_log.update(status=target, stop_reason="PIPELINE_ABORTED", finished_at=now)
+        expected_log["state_transitions"].append({"from_status": state["status"], "to_status": target,
+            "occurred_at": now, "reason": "Operator aborted unresolved remote request"})
+        require(intended == {"state": expected_state, "log": expected_log}, "ABORT_TRANSITION_REFUSED")
+        save_pair(path, intended["state"], intended["log"])
+    require(snapshot(path) == record["final_snapshot"], "ABORT_TRANSITION_REFUSED")
+    record["outcome"] = target
+    atomic_json(record_path(path), record)
+    return record
 
 
 def pr_payload(path: Path, record: dict) -> dict:
@@ -288,6 +318,8 @@ def check(task_file: Path, client=None) -> dict:
             record["outcome"] = record["final_outcome"]
             atomic_json(record_path(path), record)
             return record
+        if record["outcome"] == "FINALIZING" and "abort_snapshot" in record:
+            return finish_abort(path, record, *pair(path))
         context(path, record)
         require(record["outcome"] in {"PENDING", "DISPATCH_UNCERTAIN", "PR_UNCERTAIN", "FINALIZING"},
                 "PUBLICATION_UNCERTAIN_REQUIRES_RECONCILIATION")

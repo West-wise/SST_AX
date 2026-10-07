@@ -114,6 +114,7 @@ tree/commit/ref POST가 이미 전달됐을 가능성 때문에 재요청을 차
 | `DISPATCH_UNCERTAIN`, Sensor run ID 있음 | `check` | 같은 실행 조회, redispatch 없음 |
 | `PR_UNCERTAIN` | 동일 head/base 단일 Draft PR을 `check`로 검증 또는 명시 `abort` | PR 중복 POST 없음; 확인 불가면 `BUILD_FAILED` 종료 |
 | 게시 pair 저장 뒤 pipeline journal 갱신 중단 | 사전에 기록한 정확한 publication pair/snapshot으로 `reconcile` | 전이 중복 없음, 원래 승인 보존 |
+| 명시 중단 journal 저장 뒤 pair 저장 전 중단 | 원래 snapshot·종료 pair를 `check` 또는 `abort`에서 대조 후 동일 pair 복구 | Sensor·원격 요청 없이 실패 종료; 승인/Task identity 변경 거부 |
 
 local Worker 성공은 `IMPLEMENTED`와 명령·exit code·검증 계획·후보를 보존하면 게시할 수 있다.
 원격 후보 Actions Sensor는 계속 필요하며, local 성공으로 Draft PR 생성 조건을 생략하지 않는다.
