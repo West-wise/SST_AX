@@ -20,7 +20,7 @@ GitHub는 SSTD 읽기와 SSTC Issue 읽기·Contents/Actions/Pull requests 쓰�
 | poll_seconds | 15~3600초 확인 주기 |
 | bootstrap_sstd_base | 최초 비교 기준 전체 SHA 또는 ROOT |
 
-최초 범위는 사람이 정합니다. 현재 main SHA를 지정하면 그 이후 변경부터 처리하고, 과거 SHA는 그 이후 범위가 대상입니다. 예시 ROOT는 전체 과거 이력을 의도할 때만 사용합니다. 이후에는 저장된 cursor를 사용합니다. 최초 조회의 과거 Release는 기준 목록으로만 저장하고 새로 발행된 Release부터 접수하여 이전 계약으로 되돌리는 작업을 만들지 않습니다.
+최초 범위는 사람이 정합니다. 현재 main SHA를 지정하면 그 이후 변경부터 처리하고, 과거 SHA는 그 이후 범위가 대상입니다. `ROOT`는 parent가 없는 최초 commit을 분석할 때만 사용합니다. 이미 이력이 있는 main에는 비교 시작 commit의 전체 SHA를 지정합니다. 이후에는 저장된 cursor를 사용합니다. 최초 조회의 과거 Release는 기준 목록으로만 저장하고 새로 발행된 Release부터 접수하여 이전 계약으로 되돌리는 작업을 만들지 않습니다.
 
 ```bash
 cd "$HOME/workspace/SST_AX"
