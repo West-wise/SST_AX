@@ -34,12 +34,23 @@ class FakeIntake:
         self.owner = owner
         self.issues = []
         self.releases = []
+        self.tag_revisions = {}
         self.calls = []
 
     def api(self, endpoint, payload=None, *, binary=False):
         self.calls.append((endpoint, payload))
-        if endpoint in (SERVER + "/commits/main", SERVER + "/commits/v1"):
+        if endpoint == SERVER + "/commits/main":
             return {"sha": self.owner.server_revision, "parents": [{"sha": self.owner.server_base}]}
+        if endpoint.startswith(SERVER + "/commits/"):
+            tag = endpoint.rsplit("/", 1)[-1]
+            revision = self.tag_revisions.get(tag, self.owner.server_revision)
+            parent = self.owner.git(self.owner.server, "rev-parse", revision + "^")
+            return {"sha": revision, "parents": [{"sha": parent}]}
+        if endpoint.startswith(SERVER + "/compare/"):
+            base, head = endpoint.split("/compare/")[1].split("?")[0].split("...")
+            merge = self.owner.git(self.owner.server, "merge-base", base, head)
+            status = "identical" if base == head else "ahead" if merge == base else "behind" if merge == head else "diverged"
+            return {"status": status, "base_commit": {"sha": base}, "merge_base_commit": {"sha": merge}}
         if endpoint == SERVER + "/releases?per_page=100":
             return copy.deepcopy(self.releases)
         if endpoint == CLIENT + "/issues?state=open&per_page=100":
@@ -72,7 +83,7 @@ class ControllerTest(unittest.TestCase):
         self.server_revision = self.commit(self.server)
         for name, data in {
             "AGENTS.md": b"Use repository CI commands and keep existing navigation.\n",
-            ".github/workflows/android-ci.yml": b"name: Android CI\njobs:\n  build:\n    steps:\n      - run: ./gradlew testDebugUnitTest assembleDebug\n",
+            ".github/workflows/android-ci.yml": b"name: Android CI\njobs:\n  build:\n    steps:\n      - uses: actions/setup-java@v4\n        with:\n          java-version: '17'\n      - run: chmod +x gradlew\n      - run: ./gradlew testDebugUnitTest assembleDebug\n",
             "app/src/main/java/example/PacketDecoder.kt": b'fun decode(v:Double) = v / 100.0\n',
             "app/src/main/java/example/Units.kt": b"fun percent(v:Double) = v * 100.0\n",
             "app/src/main/java/example/Repository.kt": b"class Repository\n",
@@ -111,7 +122,10 @@ class ControllerTest(unittest.TestCase):
         return storage.load_json(self.config["state_directory"] / "controller.json")
 
     def fake_analysis(self, decision="REQUIRED", risk="LOW", present=()):
-        def invoke(command, prompt, cwd, on_session):
+        def invoke(command, prompt, cwd, on_session, *, timeout=None, on_tick=None):
+            self.assertGreater(timeout, 0)
+            self.assertLessEqual(timeout, codex_impact.TIMEOUT)
+            on_tick()
             on_session(SESSION)
             payload = json.loads(prompt[prompt.index(b'{"bodies"'):])
             manifest = payload["manifest"]
@@ -177,6 +191,53 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(event["base_revision"], self.server_base)
         self.assertEqual(event["source_revision"], self.server_revision)
         self.assertEqual(event["sstc_revision"], self.client_revision)
+
+    def test_later_release_of_intermediate_main_commit_never_creates_backward_task(self):
+        intermediate = self.server_revision
+        self.write(self.server, "src/Logging.cpp", b"void log() { /* later main */ }\n")
+        self.server_revision = self.commit(self.server)
+        with patch.object(controller, "drive", return_value="RECEIVED"):
+            controller.run_once(self.config, self.api)
+            first = self.journal()["events"]
+            self.api.tag_revisions["vB"] = intermediate
+            self.api.releases = [{"id": 3, "tag_name": "vB", "draft": False, "prerelease": False}]
+            controller.run_once(self.config, self.api)
+        after = self.journal()["events"]
+        self.assertEqual(set(after), set(first))
+        for key, event in first.items():
+            for field in ("task_id", "source_revision", "base_revision", "sstc_revision"):
+                self.assertEqual(after[key][field], event[field])
+        self.assertEqual(self.journal()["release_ids"], [3])
+        self.assertNotIn("sstd:" + intermediate, self.journal()["events"])
+
+    def test_new_release_ahead_of_observed_main_remains_an_input(self):
+        with patch.object(controller, "drive", return_value="RECEIVED"):
+            controller.run_once(self.config, self.api)
+            self.write(self.server, "src/Logging.cpp", b"void log() { /* released ahead */ }\n")
+            released = self.commit(self.server)
+            self.api.tag_revisions["vNext"] = released
+            self.api.releases = [{"id": 4, "tag_name": "vNext", "draft": False, "prerelease": False}]
+            controller.run_once(self.config, self.api)
+        event = self.journal()["events"]["sstd:" + released]
+        self.assertEqual(event["base_revision"], self.server_revision)
+        self.assertEqual(event["source_revision"], released)
+
+    def test_unknown_release_ancestry_never_creates_a_task(self):
+        with patch.object(controller, "drive", return_value="RECEIVED"):
+            controller.run_once(self.config, self.api)
+        intermediate = self.server_revision
+        self.write(self.server, "src/Logging.cpp", b"void log() { /* later main */ }\n")
+        self.server_revision = self.commit(self.server)
+        self.api.tag_revisions["vB"] = intermediate
+        self.api.releases = [{"id": 5, "tag_name": "vB", "draft": False, "prerelease": False}]
+        saved = self.journal()
+        original_api = self.api.api
+        def invalid_comparison(endpoint, *args, **kwargs):
+            return {} if "/compare/" in endpoint else original_api(endpoint, *args, **kwargs)
+        with patch.object(self.api, "api", side_effect=invalid_comparison):
+            with self.assertRaisesRegex(ValueError, "RELEASE_ANCESTRY_REQUIRES_REVIEW"):
+                controller.run_once(self.config, self.api)
+        self.assertEqual(self.journal(), saved)
 
     def test_issue_edit_creates_new_snapshot_and_pull_requests_are_ignored(self):
         self.api.issues = [self.issue(), {**self.issue(number=8), "pull_request": {}}]

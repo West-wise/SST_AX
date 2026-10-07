@@ -110,6 +110,19 @@ def discover(journal: dict, config: dict, client) -> list[dict]:
         commit = client.api(server + "/commits/" + quote(tag, safe=""))
         revision = commit.get("sha")
         require(isinstance(revision, str) and SHA.fullmatch(revision), "RELEASE_COMMIT_REQUIRED")
+        if revision == target:
+            continue
+        comparison = client.api(server + "/compare/" + revision + "..." + target + "?per_page=1")
+        require(isinstance(comparison, dict) and comparison.get("status") in
+                {"ahead", "behind", "diverged", "identical"} and
+                comparison.get("base_commit", {}).get("sha") == revision and
+                isinstance(comparison.get("merge_base_commit", {}).get("sha"), str) and
+                SHA.fullmatch(comparison["merge_base_commit"]["sha"]), "RELEASE_ANCESTRY_REQUIRES_REVIEW")
+        if comparison["status"] in {"ahead", "identical"}:
+            require(comparison["merge_base_commit"]["sha"] == revision, "RELEASE_ANCESTRY_REQUIRES_REVIEW")
+            # The observed main range already covers this contract; never adapt
+            # the client backward to an intermediate commit released later.
+            continue
         parents = commit.get("parents", [])
         events.append({"key": "sstd:" + revision, "source_type": "SSTD_CHANGE",
                        "source_reference": revision, "source_revision": revision,

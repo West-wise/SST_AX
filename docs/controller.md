@@ -31,6 +31,6 @@ python -B scripts/run_controller.py --config /absolute/path/controller.json --on
 
 ## 입력과 개입
 
-SSTD main의 고정 범위와 Release commit을 읽고 journal·입력 식별자로 중복을 막습니다. 필요한 Git 객체는 확보하되 source checkout·미커밋 변경을 바꾸지 않습니다. SSTC에서는 AX UI/UX Issue 양식의 `[AX]` 제목에 요청·제약·확인 기준을 작성합니다. 본문 수정은 새 snapshot이며 이미 승인한 입력을 덮어쓰지 않습니다.
+SSTD main의 고정 범위와 Release commit을 읽고 journal·입력 식별자로 중복을 막습니다. 관측한 main에 이미 포함된 과거 commit의 새 Release는 Task를 추가하지 않습니다. 관계를 확인할 수 없으면 중단하여 검토를 요구합니다. SHA 관계는 [GitHub commit compare](https://docs.github.com/en/rest/commits/commits#compare-two-commits)의 고정 SHA 응답으로 확인합니다. 필요한 Git 객체는 확보하되 source checkout·미커밋 변경을 바꾸지 않습니다. SSTC에서는 AX UI/UX Issue 양식의 `[AX]` 제목에 요청·제약·확인 기준을 작성합니다. 본문 수정은 새 snapshot이며 이미 승인한 입력을 덮어쓰지 않습니다.
 
 운영자는 Slack 승인·거절, 판단 유보·문맥 상한·반복 실패·게시 응답 유실의 검토와 실제 reset 시각 확인, PR review·merge·기기 확인을 수행합니다. OCI에서 두 입력의 분기, 같은 세션·worktree 재개, 후보 SHA와 Actions·Draft PR 일치, 거절·실패·한도에서 PR 생성 차단을 확인해야 합니다. 로컬 테스트를 OCI 무인 운영 성공으로 기록하지 않습니다.
