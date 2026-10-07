@@ -122,7 +122,7 @@ class ControllerTest(unittest.TestCase):
         return storage.load_json(self.config["state_directory"] / "controller.json")
 
     def fake_analysis(self, decision="REQUIRED", risk="LOW", present=()):
-        def invoke(command, prompt, cwd, on_session, *, timeout=None, on_tick=None):
+        def invoke(command, prompt, cwd, on_session, *, timeout=None, on_tick=None, on_start=None):
             self.assertGreater(timeout, 0)
             self.assertLessEqual(timeout, codex_impact.TIMEOUT)
             on_tick()
@@ -390,6 +390,27 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(storage.load_json(path)["status"], "IMPLEMENTATION_FAILED")
         self.assertEqual(candidate.read_bytes(), b"Unpublished candidate\n")
         self.assertEqual(storage.load_json(storage.checkpoint_path(path))["state"], storage.load_json(path))
+
+    def test_worker_launch_failure_reuses_worktree_without_spending_model_attempts(self):
+        self.config["bootstrap_sstd_base"] = self.server_revision
+        self.api.issues = [self.issue("Add internal decoder check")]
+        with patch.object(codex_impact, "preflight"), self.fake_analysis():
+            result = controller.run_once(self.config, self.api)
+        task_id = next(iter(result["outcomes"]))
+        path = self.config["state_directory"] / "tasks" / (task_id + ".json")
+        with patch.object(sstc_worker, "invoke", side_effect=FileNotFoundError("unavailable")) as invoke:
+            for _ in range(4):
+                controller.run_once(self.config, self.api)
+        self.assertEqual(invoke.call_count, 3)
+        state = storage.load_json(path)
+        log = storage.load_json(storage.companion(path, "log"))
+        self.assertEqual(state["status"], "IMPLEMENTATION_FAILED")
+        self.assertEqual(log["codex_worker"]["outcome"], "WORKER_UNAVAILABLE")
+        self.assertEqual(storage.load_json(storage.companion(path, "execution"))["attempts"], 0)
+        worktree = self.config["worktree_directory"] / task_id
+        self.assertEqual(Path(log["codex_worker"]["worktree"]), worktree)
+        self.assertEqual(self.git(worktree, "rev-parse", "HEAD"), self.client_revision)
+        self.assertEqual(storage.load_json(storage.checkpoint_path(path))["state"], state)
 
     def test_real_source_collection_analysis_and_no_change_policy_complete(self):
         self.write(self.server, "src/Protocol.cpp", b'packet["cpu_usage_pct"] = cpu * 100.0;\n')

@@ -226,6 +226,14 @@ def invoke(args: list[str], prompt: bytes, cwd: Path, on_session, *,
             fault.append("EXECUTION_BUDGET_EXHAUSTED")
             process.kill()
             process.wait()
+        except RuntimeError:
+            fault.append("EVENT_STREAM_START_FAILED")
+            process.kill()
+            process.wait()
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
         if reader.ident is not None:
             reader.join(timeout=5)
         if writer.ident is not None:
@@ -499,7 +507,7 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                             outcome = "VALID"
                 except KeyboardInterrupt:
                     outcome = "INTERRUPTED"
-                except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as error:
+                except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError) as error:
                     outcome = safe_reason(error)
                     if isinstance(error, OSError) and not seen and "process_id" not in record:
                         outcome = "EXECUTABLE_NOT_FOUND" if isinstance(error, FileNotFoundError) else "EXECUTABLE_UNAVAILABLE"

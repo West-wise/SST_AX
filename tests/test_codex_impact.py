@@ -346,6 +346,17 @@ class CodexImpactTest(unittest.TestCase):
             _, _, fault = worker.invoke([sys.executable, "-c", "print('x'*100)"], b"", self.root, lambda _: None)
         self.assertEqual(fault, "EVENT_LIMIT")
 
+    def test_reader_start_failure_terminates_the_real_child_before_waiting(self):
+        import time
+        processes = []
+        started = time.monotonic()
+        with patch.object(worker.threading.Thread, "start", side_effect=RuntimeError("thread unavailable")):
+            _, _, fault = worker.invoke([sys.executable, "-c", "import time;time.sleep(5)"],
+                b"", self.root, lambda _: None, timeout=0.05, on_start=processes.append)
+        self.assertEqual(fault, "EVENT_STREAM_START_FAILED")
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertTrue(storage.process_stopped(processes[0]))
+
     def test_flags_and_capability_refusal(self):
         args = worker.command("codex", Path("schema.json"), SESSION)
         for flag in ("read-only", "--ignore-user-config", "--ignore-rules",

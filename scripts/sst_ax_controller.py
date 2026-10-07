@@ -236,7 +236,7 @@ def drive(path: Path, event: dict, config: dict, client) -> str:
         inputs = path.with_name(path.stem + ".inputs")
         log = load_document(companion(path, "log"))
         receipt = log.get("codex_worker")
-        if receipt is None or receipt.get("outcome") in {"RATE_LIMIT", "CODEX_FAILED", "TIMEOUT", "INTERRUPTED"}:
+        if receipt is None or receipt.get("outcome") in {"RATE_LIMIT", "CODEX_FAILED", "TIMEOUT", "INTERRUPTED", "WORKER_UNAVAILABLE"}:
             from sstc_worker import run
             worktree = Path(receipt["worktree"]) if receipt else config["worktree_directory"] / path.stem
             branch = receipt["branch"] if receipt else "ax/sstc-sync/" + path.stem
