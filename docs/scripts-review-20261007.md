@@ -146,3 +146,20 @@ tree/commit/ref POST가 이미 전달됐을 가능성 때문에 재요청을 차
 
 local Worker 성공은 `IMPLEMENTED`와 명령·exit code·검증 계획·후보를 보존하면 게시할 수 있다.
 원격 후보 Actions Sensor는 계속 필요하며, local 성공으로 Draft PR 생성 조건을 생략하지 않는다.
+
+## 검증 범위
+
+2026-10-07 최종 통합 회귀는 **310개 모두 통과**했다(532.347초).
+실행 코드·테스트 기준 커밋은 `74409b4e367a91aa395facf2170418be9b487345`이며,
+이후 변경은 이 검증 결과를 기록한 문서뿐이다.
+
+전체 회귀 명령은 `python -B -m unittest discover -s tests -v`이다. 모의 API·이벤트만이 아니라
+실제 임시 Git 저장소의 replace object·hook·diff driver, 자식 프로세스와 종료 PID,
+저장 중단 journal을 사용해 경계를 확인한다. assertion을 약화하거나 기존 테스트를 삭제하지 않았다.
+Python 3.10 문법 검사는 스크립트·테스트 43개를 대상으로 수행했고 실제 로컬 실행 환경은
+Python 3.13.2이다. Python 3.10 런타임과 POSIX의 파일 실행 비트 동작은 이 Windows 환경에서
+실행 검증하지 않았다.
+
+로컬에 Codex CLI가 없어 인증된 실제 CLI 호출·재연결 출력·structured output 수용 여부는
+확인하지 못했다. OCI·실제 Slack 연결·GitHub Actions 호출도 이번 로컬 회귀 범위에 포함하지
+않는다. 기존 OCI Task·dirty worktree·승인 기록과 이전 Sensor 증적은 수정하지 않았다.
