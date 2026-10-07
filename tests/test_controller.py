@@ -285,6 +285,44 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(len(self.journal()["events"]), 1)
         storage.validate_pair(task, storage.load_json(task), storage.load_json(storage.companion(task, "log")))
 
+    def test_entire_discovery_batch_survives_crash_before_first_new_task(self):
+        with patch.object(controller, "drive", return_value="RECEIVED"):
+            controller.run_once(self.config, self.api)
+        releases = []
+        for number in (1, 2):
+            self.write(self.server, "src/Logging.cpp", f"void log() {{ /* release {number} */ }}\n".encode())
+            revision = self.commit(self.server)
+            self.api.tag_revisions[f"v{number}"] = revision
+            releases.append({"id": number, "tag_name": f"v{number}", "draft": False, "prerelease": False})
+        self.api.releases = releases
+        self.api.issues = [self.issue(number=7), self.issue(number=8)]
+        first_release = "sstd:" + self.api.tag_revisions["v1"]
+        original = controller.materialize
+
+        def interrupted(event, tasks):
+            if event["key"] == first_release:
+                raise KeyboardInterrupt
+            return original(event, tasks)
+
+        with patch.object(controller, "materialize", side_effect=interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                controller.run_once(self.config, self.api)
+        reserved = self.journal()
+        self.assertIn("sstd:" + self.api.tag_revisions["v2"], reserved["events"])
+        self.assertEqual(reserved["release_ids"], [1, 2])
+        self.assertEqual(len(reserved["events"]), 5)
+        self.assertEqual(len({event["task_id"] for event in reserved["events"].values()}), 5)
+        with patch.object(controller, "drive", return_value="RECEIVED"):
+            controller.run_once(self.config, self.api)
+        recovered = self.journal()["events"]
+        self.assertEqual(set(recovered), set(reserved["events"]))
+        for key, event in reserved["events"].items():
+            for field in ("task_id", "source_reference", "sstc_revision"):
+                self.assertEqual(recovered[key][field], event[field])
+        for event in reserved["events"].values():
+            task = self.config["state_directory"] / "tasks" / (event["task_id"] + ".json")
+            storage.validate_pair(task, storage.load_json(task), storage.load_json(storage.companion(task, "log")))
+
     def test_historical_releases_baseline_and_draft_publication_is_new_input(self):
         self.api.releases = [{"id": 1, "tag_name": "v1", "draft": False, "prerelease": False},
                              {"id": 2, "tag_name": "v1", "draft": True, "prerelease": False}]
@@ -297,7 +335,7 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(len(self.journal()["events"]), 1)
         self.assertIn(SERVER + "/commits/v1", [endpoint for endpoint, _ in self.api.calls])
 
-    def test_pending_validation_receipts_only_poll_and_never_restart_codex(self):
+    def test_repeated_validation_transport_failures_terminate_without_restarting_codex(self):
         self.config["bootstrap_sstd_base"] = self.server_revision
         self.api.issues = [self.issue("Add internal decoder check")]
         with patch.object(codex_impact, "preflight"), self.fake_analysis():
@@ -313,8 +351,45 @@ class ControllerTest(unittest.TestCase):
         invoke.assert_not_called()
         event = next(iter(self.journal()["events"].values()))
         self.assertEqual(event["failures"], 3)
-        self.assertEqual(storage.load_json(path)["status"], "VALIDATING")
+        self.assertEqual(storage.load_json(path)["status"], "SECURITY_REVIEW_FAILED")
         self.assertEqual(event["last_error"], "CONTROLLER_INPUT_EXECUTION_OR_CONTEXT_FAILED")
+        self.assertEqual(storage.load_json(storage.companion(path, "log"))["stop_reason"], "CONTROLLER_FAILURE_LIMIT")
+        self.assertEqual(storage.load_json(storage.checkpoint_path(path))["state"], storage.load_json(path))
+
+    def test_analysis_environment_failure_preserves_attempt_and_terminates_on_limit(self):
+        self.config["bootstrap_sstd_base"] = self.server_revision
+        self.api.issues = [self.issue("Add internal decoder check")]
+        statuses = []
+        with patch.object(codex_impact, "run", return_value="EXECUTABLE_NOT_FOUND") as invoke:
+            for _ in range(4):
+                result = controller.run_once(self.config, self.api)
+                task_id, status = next(iter(result["outcomes"].items()))
+                statuses.append(status)
+        self.assertEqual(statuses, ["ANALYZING", "ANALYZING", "ANALYSIS_FAILED", "ANALYSIS_FAILED"])
+        self.assertEqual(invoke.call_count, 3)
+        path = self.config["state_directory"] / "tasks" / (task_id + ".json")
+        self.assertEqual(storage.load_json(path)["attempt"], 0)
+        self.assertEqual(next(iter(self.journal()["events"].values()))["last_error"], "EXECUTABLE_NOT_FOUND")
+        self.assertEqual(storage.load_json(storage.checkpoint_path(path))["state"]["status"], "ANALYSIS_FAILED")
+
+    def test_repeated_implementation_failures_finish_task_and_preserve_candidate(self):
+        self.config["bootstrap_sstd_base"] = self.server_revision
+        self.api.issues = [self.issue("Add internal decoder check")]
+        with patch.object(codex_impact, "preflight"), self.fake_analysis():
+            result = controller.run_once(self.config, self.api)
+        task_id = next(iter(result["outcomes"]))
+        path = self.config["state_directory"] / "tasks" / (task_id + ".json")
+        worktree = self.config["worktree_directory"] / task_id
+        worktree.mkdir()
+        candidate = worktree / "preserved.txt"
+        candidate.write_bytes(b"Unpublished candidate\n")
+        with patch.object(sstc_worker, "run", side_effect=OSError("temporary unavailable")) as invoke:
+            for _ in range(4):
+                controller.run_once(self.config, self.api)
+        self.assertEqual(invoke.call_count, 3)
+        self.assertEqual(storage.load_json(path)["status"], "IMPLEMENTATION_FAILED")
+        self.assertEqual(candidate.read_bytes(), b"Unpublished candidate\n")
+        self.assertEqual(storage.load_json(storage.checkpoint_path(path))["state"], storage.load_json(path))
 
     def test_real_source_collection_analysis_and_no_change_policy_complete(self):
         self.write(self.server, "src/Protocol.cpp", b'packet["cpu_usage_pct"] = cpu * 100.0;\n')
