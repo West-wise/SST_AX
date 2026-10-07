@@ -517,7 +517,7 @@ class ControllerTest(unittest.TestCase):
             self.assertEqual(path.read_bytes(), raw)
         from update_task_state import update
         args = SimpleNamespace(task_file=task, recover=False, record_reset_at="2000-01-01T00:00:00Z",
-                               deferred_until=None)
+                               deferred_until=None, reason=None)
         with storage.task_lock(task):
             self.assertEqual(update(args), 0)
         self.finish_draft(task_id)

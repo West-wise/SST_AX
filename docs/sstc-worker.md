@@ -21,7 +21,7 @@ python -B scripts/run_sstc_worker.py \
 |---|---|
 | `IMPLEMENTED` | `IMPLEMENTING`에서 후보 게시 → `VALIDATING`으로 진행 |
 | `TIMEOUT`, `INTERRUPTED`, `CODEX_FAILED` | `IMPLEMENTING` checkpoint를 보존하고 같은 권한·diff·예산 안에서 재시도 |
-| `WORKER_UNAVAILABLE` | 실행 전 Codex 미설치·실행 권한 등 환경 문제; 시도 횟수를 소비하지 않고 환경 수정 후 명시적 `--resume` 가능 |
+| `WORKER_UNAVAILABLE` | 실행 전 Codex 미설치·실행 권한 등 환경 문제; 모델 시도 횟수 미소모. Controller는 같은 worktree로 제한 내 재시도하고 반복 실패를 종결. 수동 경로는 환경 수정 후 명시적 `--resume` |
 | `RATE_LIMIT` | `DEFERRED_RATE_LIMIT`; 관측한 reset 이후 같은 실행 단계 재개 |
 | 로컬 `BUILD_FAILED` | `VALIDATING` → `BUILD_FAILED`로 종료; 후보와 실패 receipt 보존 |
 | 작업 공간 생성 실패·범위 위반·세션 불일치·잘못된 이벤트·예산 초과 | `IMPLEMENTATION_FAILED`와 checkpoint를 남기고 종료 |

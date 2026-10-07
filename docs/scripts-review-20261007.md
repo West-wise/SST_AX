@@ -1,7 +1,7 @@
 # 스크립트·사용 여부 감사 — 2026-10-07
 
 기준은 PR #15가 병합된 `main`의 `ddab9d3b7430fd79b80df424ab49ec84d9d25953`이다.
-개발 Task는 `sstc-feature-20261007-0001`이며, 감사와 수정은 별도 branch/worktree에서 수행한다.
+개발 Task는 `sstc-feature-20261007-0001`이며, 감사와 수정은 `ax/scripts-review` branch와 별도 worktree에서 수행했다.
 자동 운영, 수동 점검·복구 CLI, 결정적 검증, 합성 fixture, 역사 문서를 구분한다.
 Controller에서 호출하지 않는다는 이유만으로 수동 CLI를 삭제하지 않는다.
 
@@ -66,17 +66,20 @@ Schema·policy·template은 Python import가 없어도 경로로 읽는다. Fixt
 
 | 후보 | 근거 | 처리 |
 |---|---|---|
-| `codex_impact.run(resume_approved=True)` 내부 경로 | 공개 CLI는 이미 실행 전 차단, Controller는 기본 분석만 호출; 실제 승인 후 구현은 Worker가 수행 | 내부 승인 후 재분석 경로 제거 대상. `approved_session`은 정책/Worker에 필요해 유지 |
+| `codex_impact.run(resume_approved=True)` 내부 경로 | 공개 CLI는 이미 실행 전 차단, Controller는 기본 분석만 호출; 실제 승인 후 구현은 Worker가 수행 | 내부 승인 후 재분석 경로 제거. `approved_session`은 정책/Worker에 필요해 유지 |
 | `sstc_pipeline`의 `approved_session`, `bundle` import | AST에서 이름 사용 없음, 공통 `execution_context`로 이미 대체 | import 제거 |
-| `sstc_worker`의 `tempfile`, `approved_session`, `canonical`, `validate_pair` import | AST에서 이름 사용 없음 | 담당 Worker 교정과 함께 제거 대상 |
-| `execution_policy`의 `timezone` import | AST에서 이름 사용 없음 | 담당 정책 교정과 함께 제거 대상 |
+| `sstc_worker`의 `tempfile`, `approved_session`, `canonical`, `validate_pair` import | AST에서 이름 사용 없음 | 제거 |
+| `execution_policy`의 `timezone` import | AST에서 이름 사용 없음 | 제거 |
 | `analyze_impact.py`와 `.impact.md` | 현재 Controller/Sensor는 Markdown을 읽지 않지만 수동 CLI 결과와 두 회귀 테스트는 존재 | 파일 유지. 삭제하면 legacy CLI의 관측 가능한 동작이 사라짐 |
 | 초기 계획·`harness-assessment.md` | 실행 권한 파일이 아닌 역사 기록; 현재 기준은 README/Controller라는 안내 존재 | 유지. 현재 운영 문서와 같은 권한 기준으로 사용하지 않음 |
 | 의미 평가·검증 CLI와 fixture | 구조 성공이 의미 성공을 뜻하지 않아 별도 평가·검증이 필요; 실제 테스트/운영 참조 존재 | 유지 |
 | 미추적 Task·dirty worktree·인증 파일 | 기존 승인·중단·운영 증거, 사용자 변경 | 정리 대상 제외 |
 
 전체 파일 단위에서는 삭제해도 모든 지원 동작이 그대로라는 근거가 확인된 파일이 없었다.
-잘못된 동작 경로와 무용 import는 정리하되, 파일 수를 줄이기 위해 유효한 CLI나 검증을 삭제하지 않는다.
+파일 삭제는 0개이며, 차단된 내부 실행 분기와 사용하지 않는 import 7개를 제거했다.
+운영 경로는 Controller의 두 Handler로 유지하고 수동 CLI는 같은 검증·복구 library를 사용한다.
+상태 저장은 공통 journal, 실행 허가는 불변 authority, 재시도는 누적 budget으로 연결해 중복 판단을 줄였다.
+새 서비스나 운영 진입점, 별도 패키지 구조는 추가하지 않았다.
 
 유지한 `analyze_impact.py`도 별도로 보안 검토했다. 예전 Git 호출은 상속 설정·출력 크기·시간을
 제한하지 않았으며 이동 가능한 ref를 여러 번 읽고 Git 오류·commit 메시지를 그대로 출력/저장했다.
@@ -86,25 +89,50 @@ Schema·policy·template은 Python import가 없어도 경로로 읽는다. Fixt
 
 ## 제기된 8개 항목의 기준 코드 판정
 
-| 지적 | 확인된 현재 상태 | 교정·검증 대상 |
+| 지적 | 기준 코드 판정 | 완료한 교정·검증 |
 |---|---|---|
-| 1. 승인 후 재분석에서 checkpoint/attempt 충돌 | 내부 `resume_approved`에는 남아 있으나 공개 CLI는 PR #15에서 차단. 실제 Worker는 불변 승인 근거를 별도로 사용 | 차단된 내부 경로 제거, Worker의 같은 세션 재개 경계를 검증 |
-| 2. ANALYZING의 ATTEMPT_LIMIT/RUNNING/재시도 | attempt 3 제한은 이미 `stop_budget`으로 `ANALYSIS_FAILED` 전이. RUNNING hard crash의 명시 복구는 미구현 | RUNNING 복구·재시도 outcome의 종료 조건 확인. 실패별 정책을 명시 |
-| 3. evidence ID 경로 탈출 | `bundle`은 경로를 만들기 전에 manifest shape를 검증. `validate_shape`는 `$ref`와 anchored pattern을 실제 검사. `../escape`는 기존 회귀 테스트에서 거부 | 경로 조합 지점에 독립 ID 검사 추가로 방어 보강 |
-| 4. non-JSON/error 이벤트 | JSONL이 아닌 출력은 fail-closed로 차단. 모든 `error`를 terminal 실패로 간주하는 구현은 최종 성공 턴과 충돌할 수 있음 | 공식 이벤트 규약·출력 예시와 비교, terminal 실패와 중간 오류를 구분. raw stream은 저장하지 않음 |
-| 5. 오류 분류와 preflight/launch | 실행 오류는 하나의 코드로 축약. preflight 예외는 공개 CLI가 잡으며 분석 attempt는 증가 전이나 Controller는 terminal 처리할 수 있음 | 신뢰 가능한 고정 원인 코드 보존, 환경/실행/결과 실패의 attempt와 상태를 확인 |
-| 6. VALID 재호출 | Controller는 VALID 분석을 건너뛰나 직접 `run`/CLI는 다시 Codex를 호출하고 레코드 덮어쓰기 | VALID 입력/결과 재검증 후 같은 결과 반환, transport 재호출 없음 |
-| 7. pair/session checkpoint 저장·인터럽트 | pair journal은 있으나 별도 codex-checkpoint와 원자적 연결 없음. 일부 인터럽트가 RUNNING을 남길 수 있음 | 정해진 checkpoint를 pair journal에 포함·복구, 중단 경로 기록 |
-| 8. 환경·빈 승인·schema·상위 링크 | proxy/CA env 미전달, 빈 approvals의 raw 예외 가능. 현재 nullable는 `type: [string, null]`라 `{}`가 되지는 않음. 상위 링크 거부는 의도한 안전 제한 | proxy/CA 정책, 고정 승인 오류, 미지원 schema keyword 처리·실제 CLI 검증 한계 문서화. 링크 제한을 자동 우회하지 않음 |
+| 1. 승인 후 재분석에서 checkpoint/attempt 충돌 | 내부 `resume_approved`에는 남아 있으나 공개 CLI는 PR #15에서 차단. 실제 Worker는 불변 승인 근거를 별도로 사용 | 내부 분기 제거. Worker 재개가 같은 세션·입력·승인·worktree·diff에 결합됨을 검증 |
+| 2. ANALYZING의 ATTEMPT_LIMIT/RUNNING/재시도 | 다음 호출의 attempt 제한은 이미 실패 전이. RUNNING 크래시의 명시 복구는 미구현 | TIMEOUT/CODEX_FAILED/INTERRUPTED의 세 번째 실패를 즉시 종결. RUNNING은 종료 PID·관측 예산에 근거한 명시 복구 또는 abort. 자동 중복 호출 금지 |
+| 3. evidence ID 경로 탈출 | manifest shape의 `$ref`와 anchored pattern이 실제 적용되어 `../escape`는 기존 테스트에서도 거부 | 경로 조합 직전에 독립 fullmatch 검사 추가. schema 검사를 모의로 우회한 경우에도 경로 탈출을 거부 |
+| 4. non-JSON/error 이벤트 | 공식 0.153.2 소스에서 최상위 `error`는 치명 오류, `item.type=error`는 비치명 알림. 기존 parser도 후자를 실패로 처리하지 않음 | 이 분류를 유지하고 회귀 테스트 추가. 비 JSON stdout은 계속 거부. 도구 이벤트를 started/updated에서도 차단. 실제 CLI 재연결 출력은 미검증 |
+| 5. 오류 분류와 preflight/launch | 실행 원인이 하나의 코드로 축약되고 환경 실패 처리도 비대칭 | 허용한 고정 원인 코드만 보존. preflight/실행 전 환경 실패는 모델 attempt 미소모. Controller 오류 한도에서 실패 종료 |
+| 6. VALID 재호출 | 직접 `run`/CLI는 Codex를 다시 호출하고 레코드를 덮어씀 | 입력·결과·세션 재검증 후 기존 VALID 반환. 호출·attempt·budget·기록 변경 없음 |
+| 7. pair/session checkpoint 저장·인터럽트 | 별도 Codex checkpoint 쓰기와 pair 사이에 크래시 틈 존재 | 표준/Codex checkpoint를 같은 pending journal로 저장·복구. PID와 누적 예산 보존. 인터럽트 및 thread 시작 실패에서 자식 프로세스 종료 |
+| 8. 환경·빈 승인·schema·상위 링크 | proxy/CA env 누락, 빈 approvals raw 예외. 현재 nullable는 정상. 상위 링크 거부는 의도한 제한 | 신뢰된 proxy/CA 허용 목록, APPROVAL_REQUIRED, nullable 보존·미지원 schema keyword 명시 거부를 검증. 링크 제한은 유지·문서화 |
 
 현재 nullable schema가 깨진다는 주장이나 evidence ID가 검증 없이 탈출한다는 주장은 기준 코드에서 재현되지 않는다.
-상태 복구·VALID 재호출·고정 원인 코드 문제는 별도로 교정해야 한다.
+상태 복구·VALID 재호출·고정 원인 코드 문제는 교정했다.
 실제 인증된 Codex/OCI 실행 여부는 합성 transport 테스트와 구분해 기록한다.
+
+상태/outcome별 다음 동작은 [분석 전이 표](codex-impact.md), [Worker 결과 표](sstc-worker.md),
+[게시·검증 복구](sstc-pipeline.md)에 정리했다. 실패 종결 뒤에는 자동 재시도하지 않으며,
+실행 결과가 불확실한 중단은 승인·관측 예산에 근거한 명시 복구가 필요하다.
+
+## 전체 스크립트 리뷰에서 추가로 교정한 문제
+
+- Controller가 같은 poll에서 발견한 여러 입력 중 일부만 journal에 저장한 뒤 중단하면
+  Release/Issue를 유실할 수 있었다. 전체 batch를 먼저 예약하고 고정 Task ID로 이어간다.
+  반복 환경·전송 실패도 현재 단계의 실패 상태와 checkpoint로 종결한다.
+- Worker 작업 공간 생성·로컬 빌드 실패가 `IMPLEMENTING`에 남았다. 실패를 분류해 종결하고,
+  로컬 성공은 `IMPLEMENTED`로 통일했다. Gradle 실행 비트는 검증 뒤 원래 모드로 복원한다.
+  로컬 성공도 후보 Actions 검증과 Draft PR 조건을 대체하지 않는다.
+- Slack 수동 launcher가 분석 없는 Task를 승인 대기로 만들 수 있었다. 연결 전과 checkpoint 전
+  검증된 REQUIRED 분석·입력·세션을 대조하며 CRITICAL/새 SSTD 계약 요청을 거부한다.
+  메시지는 Task와 결과 중 높은 위험도를 표시하고 기존 승인 사유의 token도 전송을 막는다.
+- 인식 가능한 `xapp` token이 기존 scanner에서 빠져 있었다. Task 생성·상태 변경의 문자열,
+  분석·증적·Slack 표시를 검사하고 고정 오류를 사용한다. 테스트에는 합성 token만 사용했다.
+- Git replace object·외부 diff/textconv·hook·checkout filter로 고정 SHA의 관측 내용이나 실행이
+  바뀔 수 있었다. 실제 객체 조회와 후보 diff 경계에서 차단하고 checkout filter는 사람 검토로 중단한다.
+- 분석 reader thread 시작 실패가 자식 종료 없이 `Popen.__exit__`에서 대기하는 현상을
+  실제 Python sleep 프로세스로 재현했다. 자식을 종료한 뒤 고정 원인 코드로 반환한다.
+
+scanner는 인식 가능한 credential 형식을 탐지하는 경계이며 모든 종류의 비밀을 탐지한다고
+보장하지 않는다. raw stderr/이벤트를 저장하지 않는 정책과 인증 환경 필터를 함께 유지한다.
 
 ## 추가로 확인한 게시 단계 복구
 
 `PUBLISH_UNCERTAIN`은 기존 `publish`와 `check` 모두에서 다음 단계로 갈 수 없었다.
-tree/commit/ref POST가 이미 전달됐을 가능성 때문에 재요청을 차단한 판단은 유지하고, 명시 복구와 종료 경로를 추가한다.
+tree/commit/ref POST가 이미 전달됐을 가능성 때문에 재요청을 차단한 판단은 유지하고, 명시 복구와 종료 경로를 추가했다.
 
 | 저장된 outcome | 허용된 다음 경로 | 상태/권한 |
 |---|---|---|
