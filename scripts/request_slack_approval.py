@@ -41,13 +41,25 @@ def run(task_file: Path, reason: str, config: dict[str, str]) -> int:
     from slack_runner import run as run_gateway
     from task_storage import load_json, task_lock
     from update_task_state import update
+    from execution_policy import validated_analysis
 
-    state = load_json(task_file)
-    status = state.get("status")
-    if status not in {"ANALYZING", "WAITING_APPROVAL"}:
-        raise ValueError("Task must be ANALYZING or WAITING_APPROVAL")
-    if status == "WAITING_APPROVAL" and state.get("approval_reason") != reason:
-        raise ValueError("Approval reason does not match the existing checkpoint")
+    with task_lock(task_file):
+        state = load_json(task_file)
+        status = state.get("status")
+        if status not in {"ANALYZING", "WAITING_APPROVAL"}:
+            raise ValueError("Task must be ANALYZING or WAITING_APPROVAL")
+        if status == "WAITING_APPROVAL" and state.get("approval_reason") != reason:
+            raise ValueError("Approval reason does not match the existing checkpoint")
+        analysis = validated_analysis(task_file)
+        result = analysis["result"]
+        if result["change_required"] != "REQUIRED":
+            raise ValueError("REQUIRED_ANALYSIS_NEEDED_FOR_APPROVAL")
+        if result["risk_level"] == "CRITICAL":
+            raise ValueError("CRITICAL_ANALYSIS_REFUSED")
+        if analysis["state"]["source_type"] == "SSTC_FEATURE" and any(
+                result["impacts"][key]["status"] == "PRESENT"
+                for key in ("protocol_contract", "sstd_change_required")):
+            raise ValueError("PROTOCOL_APPROVAL_REQUIRED")
 
     code = run_gateway(argparse.Namespace(command="check", task_file=None), config)
     if code:
@@ -57,6 +69,9 @@ def run(task_file: Path, reason: str, config: dict[str, str]) -> int:
                                   recover=False, record_reset_at=None,
                                   reason=reason, deferred_until=None)
         with task_lock(task_file):
+            current = validated_analysis(task_file)
+            if current["state"] != analysis["state"] or current["log"] != analysis["log"]:
+                raise ValueError("APPROVAL_ANALYSIS_CHANGED")
             code = update(args)
         if code:
             return code

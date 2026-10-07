@@ -52,28 +52,23 @@ python -B scripts/request_slack_approval.py \
 ```
 
 Task는 `ANALYZING` 또는 동일한 사유로 이미 생성된 `WAITING_APPROVAL` 상태여야 한다.
-전자는 Slack 연결 확인에 성공한 뒤 `WAITING_APPROVAL` checkpoint를 만들고, 후자는
-기존 요청을 재사용한다. 승인하면 `IMPLEMENTING`, 거절하면 `REJECTED`로 종료한다.
+두 상태 모두 입력 증적·결과 hash·세션을 다시 검증한 `VALID` 분석과 `REQUIRED` 결과가
+필요하다. 분석이 없거나 결과가 변했으면 Slack 연결과 Task 변경 전에 거부한다.
+`CRITICAL`, 판단 유보, 수정 불필요 결과와 SSTC 요청에서 새 SSTD 계약이 필요한 결과는
+구현 승인 대상으로 보내지 않는다. `ANALYZING`에서는 Slack 연결 확인에 성공한 뒤
+`WAITING_APPROVAL` checkpoint를 만들고, 기존 대기 Task에서는 요청을 재사용한다.
 
-기존 작업과 분리한 임시 Task를 만든다. 출력의 Task ID를 `AX_TASK_FILE`에 사용한다.
-
-```bash
-AX_TEST_ROOT=$(mktemp -d /tmp/sst-ax-slack.XXXXXX)
-python -B scripts/create_task.py --source-type SSTC_FEATURE \
-  --source-reference local:slack-smoke --risk-level MEDIUM \
-  --task-directory "$AX_TEST_ROOT/tasks"
-AX_TASK_FILE="$AX_TEST_ROOT/tasks/출력된TASK_ID.json"
-python -B scripts/update_task_state.py --task-file "$AX_TASK_FILE" --status ANALYZING
-python -B scripts/update_task_state.py --task-file "$AX_TASK_FILE" \
-  --status WAITING_APPROVAL --reason UI_CHANGE
-python -B scripts/slack_runner.py listen --task-file "$AX_TASK_FILE"
-python -B scripts/validate_task_state.py "$AX_TASK_FILE"
-```
+버튼 검증에는 [Controller](controller.md)가 실제 입력을 분석하여 만든 승인 대기 Task를
+사용한다. 수동 경로에서는 [입력 수집](impact-inputs.md)과 [읽기 전용 분석](codex-impact.md)을
+완료한 실제 Task를 `$TASK_FILE`에 지정한다. 분석 없이 임시 Task의 상태만 승인 대기로
+바꾸거나 `VALID` 레코드를 직접 작성하지 않는다. `--reason`에는 기존 승인 사유와 같은
+값을 사용한다. Controller가 대기 승인을 처리 중이면 같은 Task의 별도 Listener를 실행하지 않는다.
 
 Slack에서 승인하면 `IMPLEMENTING`, 거절하면 `REJECTED`를 출력하고 종료한다.
-상태만 변경하며 소스 코드를 수정하거나 Codex를 실행하지 않는다. 메시지에는 Task ID와
-만료 시각만 보내므로 실제 UI/UX 승인에서는 별도로 검토한 화면·선택지·작업 범위가
-필요하다. 이 실험 메시지만으로 실서비스 UI 변경을 승인하지 않는다.
+메시지는 검증된 분석 요약·영향 범위·출처와 고정 SHA·미해결 질문·만료 시각을 표시하며,
+위험도는 Task와 분석 결과 중 높은 값을 사용한다. 승인은 구현 단계 진입만 허용한다.
+이 CLI는 소스를 수정하거나 Codex를 실행하지 않는다. 화면 선택과 실제 기기 확인은
+사람이 수행하며 merge·Release·배포 권한은 승인 버튼으로 부여하지 않는다.
 
 ## 재실행과 검증 범위
 
@@ -86,8 +81,8 @@ Task·checkpoint 변경 후 이전 메시지, 만료 요청, 다른 사용자·�
 상태 저장 중 실패하여 pending journal이 있으면 기존 복구 절차를 사용한다.
 
 ```bash
-python -B scripts/update_task_state.py --task-file "$AX_TASK_FILE" --recover
-python -B scripts/validate_task_state.py "$AX_TASK_FILE"
+python -B scripts/update_task_state.py --task-file "$TASK_FILE" --recover
+python -B scripts/validate_task_state.py "$TASK_FILE"
 python -B -m unittest discover -s tests -v
 ```
 
