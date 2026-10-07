@@ -22,11 +22,21 @@ def main(argv=None) -> int:
     publish.add_argument("--input-directory", type=Path, required=True)
     check = commands.add_parser("check", allow_abbrev=False)
     check.add_argument("--task-file", type=Path, required=True)
+    reconcile = commands.add_parser("reconcile", allow_abbrev=False)
+    reconcile.add_argument("--task-file", type=Path, required=True)
+    abort = commands.add_parser("abort", allow_abbrev=False)
+    abort.add_argument("--task-file", type=Path, required=True)
     args = parser.parse_args(argv)
-    from sstc_pipeline import check as poll, publish as start
+    from sstc_pipeline import abort as stop, check as poll, publish as start, reconcile as recover
     try:
-        record = (start(args.task_file, args.input_directory) if args.command == "publish"
-                  else poll(args.task_file))
+        if args.command == "publish":
+            record = start(args.task_file, args.input_directory)
+        elif args.command == "reconcile":
+            record = recover(args.task_file)
+        elif args.command == "abort":
+            record = stop(args.task_file)
+        else:
+            record = poll(args.task_file)
     except KeyboardInterrupt:
         print("SSTC_PIPELINE=INTERRUPTED", file=sys.stderr)
         return 130
@@ -39,7 +49,7 @@ def main(argv=None) -> int:
         print("RUN_ID=" + str(record["run_id"]))
     if record.get("draft_pr_url"):
         print("DRAFT_PR=" + record["draft_pr_url"])
-    return 1 if record["outcome"] == "BUILD_FAILED" else 0
+    return 1 if record["outcome"] in {"BUILD_FAILED", "IMPLEMENTATION_FAILED"} else 0
 
 
 if __name__ == "__main__":

@@ -21,11 +21,18 @@ def main(argv=None) -> int:
     request.add_argument("--candidate-sha", required=True)
     check = commands.add_parser("check", allow_abbrev=False)
     check.add_argument("--task-file", type=Path, required=True)
+    reconcile = commands.add_parser("reconcile", allow_abbrev=False)
+    reconcile.add_argument("--task-file", type=Path, required=True)
+    reconcile.add_argument("--run-id", type=int, required=True)
     args = parser.parse_args(argv)
     from github_validation import ValidationError, check_validation, request_validation
     try:
-        record = (request_validation(args.task_file, args.candidate_sha) if args.command == "request"
-                  else check_validation(args.task_file))
+        if args.command == "request":
+            record = request_validation(args.task_file, args.candidate_sha)
+        elif args.command == "reconcile":
+            record = check_validation(args.task_file, reconcile_run_id=args.run_id)
+        else:
+            record = check_validation(args.task_file)
     except KeyboardInterrupt:
         print("GITHUB_VALIDATION=INTERRUPTED", file=sys.stderr)
         return 130
