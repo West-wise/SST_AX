@@ -167,6 +167,10 @@ class ExecutionPolicyTest(unittest.TestCase):
             self.implement(executable, session, prompt, cwd, **kwargs)
             return 1, b'{"type":"turn.failed"}\n', None
         self.assertEqual(self.run_worker(failed), "CODEX_FAILED")
+        # Legacy workers retained the WAITING_APPROVAL checkpoint and had no
+        # immutable authority file. Rebuild that actual historical fixture.
+        authority = storage.load_json(policy.authority_path(self.path))
+        storage.atomic_json(storage.checkpoint_path(self.path), authority["approval_checkpoint"])
         policy.authority_path(self.path).unlink()
         storage.companion(self.path, "execution").unlink()
         state, log = policy.pair(self.path)

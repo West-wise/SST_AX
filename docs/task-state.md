@@ -68,6 +68,13 @@ stateDiagram-v2
 실패 상태와 `PROTOCOL_APPROVAL_REQUIRED`는 자동 재개하지 않는다. 원인과
 재개 조건을 확인한 뒤 별도 Task 또는 명시적으로 허용된 복구 절차를 사용한다.
 
+Worker의 일시적인 timeout·중단·Codex 실패는 `IMPLEMENTING` checkpoint를 유지하고
+누적 예산 안에서 재시도한다. 작업 공간 생성 실패·후보 범위 위반·세션 불일치·
+이벤트 형식 오류는 `IMPLEMENTATION_FAILED`로 종료한다. 로컬 빌드 실패는
+`IMPLEMENTING → VALIDATING → BUILD_FAILED`로 기록한다. 부모 프로세스 크래시로
+`RUNNING`이 남으면 자동 재실행하지 않으며, 기록된 프로세스의 종료와 실제 누적
+예산을 검증하는 [명시적 Worker 복구](sstc-worker.md)가 필요하다.
+
 ## 허용 전이
 
 | 현재 상태 | 허용되는 다음 상태 |

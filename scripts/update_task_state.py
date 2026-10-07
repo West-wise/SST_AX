@@ -86,6 +86,10 @@ def update(args: argparse.Namespace) -> int:
         recover_pair(args.task_file)
         print("TASK_RECOVERED")
         return 0
+    from impact_collection import check_content
+    for value in (args.reason, args.deferred_until, getattr(args, "record_reset_at", None)):
+        if isinstance(value, str):
+            check_content(value.encode("utf-8"))
     if companion(args.task_file, "pending").exists():
         raise ValueError("Interrupted save: run --recover first")
     try:

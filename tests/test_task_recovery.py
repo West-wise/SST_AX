@@ -179,3 +179,18 @@ class RecoveryTest(unittest.TestCase):
         result = self.run_script("update_task_state.py", "--task-file", str(self.path), "--recover")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.path.read_bytes(), before)
+
+    def test_secret_reason_never_changes_state_log_or_checkpoint(self):
+        synthetic = "xoxb-" + "synthetic-for-test-only-1234567890"
+        for status in ("WAITING_APPROVAL", "ANALYSIS_FAILED"):
+            with self.subTest(status=status):
+                state_before = self.path.read_bytes()
+                log_path = storage.companion(self.path, "log")
+                log_before = log_path.read_bytes()
+                checkpoint = storage.checkpoint_path(self.path)
+                result = self.move(status, "--reason", synthetic, success=False)
+                self.assertNotIn(synthetic, result.stdout + result.stderr)
+                self.assertEqual(self.path.read_bytes(), state_before)
+                self.assertEqual(log_path.read_bytes(), log_before)
+                self.assertFalse(checkpoint.exists())
+                self.assertFalse(storage.companion(self.path, "pending").exists())
