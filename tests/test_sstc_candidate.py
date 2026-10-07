@@ -98,6 +98,34 @@ class SstcCandidateTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "CANDIDATE_CHANGED"):
             candidate.tree_payload(self.repository, self.revision, self.branch, files)
 
+    def test_replace_objects_cannot_change_pinned_source_tree(self):
+        self.write("README.md", "replacement tree\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "replacement")
+        replacement = self.git("rev-parse", "HEAD").decode().strip()
+        self.git("reset", "--hard", self.revision)
+        self.git("replace", self.revision, replacement)
+        self.assertEqual(self.git("show", self.revision + ":README.md"), b"replacement tree\n")
+        self.write("app/src/main/java/example/Existing.kt", "approved change\n")
+        files = self.snapshot()
+        self.assertEqual([item["path"] for item in files], ["app/src/main/java/example/Existing.kt"])
+        tree, _ = candidate.tree_payload(self.repository, self.revision, self.branch, files)
+        self.assertEqual(self.git("--no-replace-objects", "show", tree + ":README.md"), b"unchanged\n")
+
+    def test_repository_diff_and_textconv_drivers_are_never_executed(self):
+        marker = self.root / "driver-ran"
+        script = self.root / "diff-driver.py"
+        script.write_text("from pathlib import Path\nPath(" + repr(str(marker)) + ").write_text('ran')\n",
+                          encoding="utf-8")
+        command = '"' + sys.executable + '" "' + str(script) + '"'
+        (self.repository / ".git/info/attributes").write_text("*.kt diff=trap\n", encoding="utf-8")
+        self.git("config", "diff.trap.command", command)
+        self.git("config", "diff.trap.textconv", command)
+        self.write("app/src/main/java/example/Existing.kt", "changed\n")
+        output = candidate.git(self.repository, ["diff", self.revision, "--"])
+        self.assertIn(b"changed", output)
+        self.assertFalse(marker.exists())
+
     def test_staged_rename_publishes_old_deletion_and_new_content(self):
         old_name = "app/src/main/java/example/Existing.kt"
         new_name = "app/src/main/java/example/Renamed.kt"

@@ -1,6 +1,7 @@
 """Offline tests for approval-bound SSTC worktree orchestration."""
 import copy
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import slack_approval as approval
 import sstc_worker as worker
 import task_storage as storage
+from codex_impact import canonical
 
 ROOT = Path(__file__).resolve().parents[1]
 SESSION = "0199a213-81c0-7800-8aa1-bbab2a035a53"
@@ -81,8 +83,8 @@ class SstcWorkerTest(unittest.TestCase):
         manifest = storage.load_json(self.inputs / "manifest.json")
         log = storage.load_json(storage.companion(self.task, "log"))
         log["codex_analysis"] = {"session_id": SESSION, "outcome": "VALID",
-                                  "manifest_sha256": __import__("hashlib").sha256(worker.canonical(manifest)).hexdigest(),
-                                  "result_file": "result.json", "result_sha256": __import__("hashlib").sha256(worker.canonical(self.result)).hexdigest()}
+                                  "manifest_sha256": __import__("hashlib").sha256(canonical(manifest)).hexdigest(),
+                                  "result_file": "result.json", "result_sha256": __import__("hashlib").sha256(canonical(self.result)).hexdigest()}
         storage.atomic_json(self.task.parent / "result.json", self.result)
         state = storage.load_json(self.task)
         # Build the exact analysis checkpoint expected by the shared approval validator.
@@ -117,7 +119,7 @@ class SstcWorkerTest(unittest.TestCase):
              patch("sstc_candidate.candidate_snapshot", return_value=[]), \
              patch.object(worker, "invoke", side_effect=fake_invoke), patch.object(worker, "validation", return_value=(0, "./gradlew testDebugUnitTest assembleDebug")):
             self.assertEqual(worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
-                                         self.inputs, "codex"), "VALIDATED")
+                                         self.inputs, "codex"), "IMPLEMENTED")
         add.assert_called_once_with(self.source, self.worktree, "ax/sstc-sync/demo", self.revision)
         state, log = storage.load_json(self.task), storage.load_json(storage.companion(self.task, "log"))
         self.assertEqual(state["status"], "IMPLEMENTING")
@@ -146,7 +148,7 @@ class SstcWorkerTest(unittest.TestCase):
              patch.object(worker, "create_worktree"), patch.object(worker, "invoke", return_value=(0, self.github_events(), None)), \
              patch.object(worker, "validation", return_value=(0, "./gradlew testDebugUnitTest assembleDebug")):
             self.assertEqual(worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
-                                         self.inputs), "VALIDATED")
+                                         self.inputs), "IMPLEMENTED")
         self.assertEqual((self.source / "local-notes").read_text(encoding="utf-8"), "keep")
 
     def pin_inputs_and_approve(self):
@@ -244,7 +246,7 @@ class SstcWorkerTest(unittest.TestCase):
                            self.inputs, validation_mode="github")
         build.assert_not_called()
         state, log = self.pair()
-        self.assertEqual(state["status"], "IMPLEMENTING")
+        self.assertEqual(state["status"], "IMPLEMENTATION_FAILED")
         self.assertEqual(log["codex_worker"]["outcome"], "WORKER_FAILED")
         self.assertNotIn("candidate_files", log["codex_worker"])
 
@@ -316,6 +318,195 @@ class SstcWorkerTest(unittest.TestCase):
                 worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
                            self.inputs, validation_mode="remote")
         add.assert_not_called()
+
+    def test_worktree_creation_failure_is_terminal_with_recoverable_storage_checkpoint(self):
+        with patch.object(worker, "create_worktree", side_effect=ValueError("GIT_OPERATION_FAILED")), \
+             patch.object(worker, "invoke") as invoke:
+            with self.assertRaises(ValueError):
+                worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo", self.inputs,
+                           validation_mode="github")
+        invoke.assert_not_called()
+        state, log = self.pair()
+        self.assertEqual(state["status"], "IMPLEMENTATION_FAILED")
+        self.assertEqual(log["codex_worker"]["outcome"], "WORKTREE_CREATION_FAILED")
+        storage.load_checkpoint(self.task, state, log)
+
+    def test_local_build_failure_is_terminal_and_success_shares_remote_candidate_path(self):
+        def implement(executable, session, prompt, cwd, **kwargs):
+            path = cwd / "app/src/main/java/Client.kt"
+            path.parent.mkdir(parents=True)
+            path.write_text("class Client\n", encoding="utf-8")
+            kwargs["on_write"](1)
+            return 0, self.github_events(), None
+        with patch.object(worker, "invoke", side_effect=implement), \
+             patch.object(worker, "validation", return_value=(1, "./gradlew testDebugUnitTest assembleDebug")):
+            self.assertEqual(worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo", self.inputs),
+                             "BUILD_FAILED")
+        state, log = self.pair()
+        self.assertEqual(state["status"], "BUILD_FAILED")
+        self.assertEqual([item["to_status"] for item in log["state_transitions"][-2:]],
+                         ["VALIDATING", "BUILD_FAILED"])
+        self.assertEqual(log["codex_worker"]["validation"]["exit_code"], 1)
+        self.assertTrue(log["codex_worker"]["candidate_files"])
+        storage.load_checkpoint(self.task, state, log)
+
+    def test_crashed_worker_needs_stopped_pid_observed_budget_and_explicit_resume(self):
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        def stop_process():
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=5)
+        self.addCleanup(stop_process)
+        def crash(executable, session, prompt, cwd, **kwargs):
+            kwargs["on_start"](process.pid)
+            path = cwd / "app/src/main/java/Client.kt"
+            path.parent.mkdir(parents=True)
+            path.write_text("class Client\n", encoding="utf-8")
+            kwargs["on_write"](1)
+            raise SystemExit("simulate parent crash")
+        with patch.object(worker, "invoke", side_effect=crash):
+            with self.assertRaises(SystemExit):
+                worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo", self.inputs,
+                           validation_mode="github")
+        proof = worker.execution_context(self.task, self.inputs)["proof"]
+        before = storage.load_json(storage.companion(self.task, "execution"))
+        with self.assertRaisesRegex(ValueError, "RESUME_WORKTREE_CONTEXT_CHANGED"):
+            worker.reconcile_interrupted(self.task, self.inputs, worktree=self.root / "another-worktree")
+        with self.assertRaisesRegex(ValueError, "WORKER_PROCESS_STILL_RUNNING"):
+            worker.reconcile_interrupted(self.task, self.inputs, active_seconds=before["active_seconds"] + 1,
+                                         write_steps=before["write_steps"] + 1)
+        with self.assertRaisesRegex(ValueError, "WORKER_PROCESS_STILL_RUNNING"):
+            worker.reconcile_interrupted(self.task, self.inputs, abort=True)
+        process.terminate()
+        process.wait(timeout=5)
+        with self.assertRaisesRegex(ValueError, "OBSERVED_CRASH_BUDGET_REQUIRED"):
+            worker.reconcile_interrupted(self.task, self.inputs)
+        with patch.object(worker, "invoke") as invoke:
+            self.assertEqual(worker.reconcile_interrupted(self.task, self.inputs,
+                             active_seconds=before["active_seconds"] + 1, write_steps=before["write_steps"] + 1),
+                             "IMPLEMENTING")
+        invoke.assert_not_called()
+        state, log = self.pair()
+        self.assertEqual(log["codex_worker"]["outcome"], "INTERRUPTED")
+        self.assertEqual(worker.execution_context(self.task, self.inputs)["proof"], proof)
+        storage.load_checkpoint(self.task, state, log)
+        with patch.object(worker, "invoke", return_value=(0, self.github_events(), None)), \
+             patch.object(worker, "create_worktree") as create:
+            self.assertEqual(worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo", self.inputs,
+                             validation_mode="github", resume=True), "IMPLEMENTED")
+        create.assert_not_called()
+        after = storage.load_json(storage.companion(self.task, "execution"))
+        self.assertEqual(after["attempts"], 2)
+        self.assertGreaterEqual(after["active_seconds"], before["active_seconds"] + 1)
+        self.assertEqual(after["write_steps"], before["write_steps"] + 1)
+        self.assertEqual(len(self.pair()[1]["approvals"]), 1)
+
+    def test_legacy_running_receipt_without_pid_can_only_abort(self):
+        with patch.object(worker, "invoke", side_effect=SystemExit("simulate missing PID crash")):
+            with self.assertRaises(SystemExit):
+                worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo", self.inputs,
+                           validation_mode="github")
+        with self.assertRaisesRegex(ValueError, "PROCESS_CONFIRMATION_REQUIRED"):
+            worker.reconcile_interrupted(self.task, self.inputs, active_seconds=1, write_steps=1)
+        with patch.object(worker, "invoke") as invoke:
+            self.assertEqual(worker.reconcile_interrupted(self.task, self.inputs, abort=True),
+                             "IMPLEMENTATION_FAILED")
+        invoke.assert_not_called()
+        self.assertTrue(self.worktree.is_dir())
+        state, log = self.pair()
+        storage.load_checkpoint(self.task, state, log)
+
+    def test_nonfatal_error_item_is_allowed_but_fatal_top_level_error_is_not(self):
+        start = json.dumps({"type": "thread.started", "thread_id": SESSION}).encode() + b"\n"
+        completed = b'{"type":"turn.completed"}\n'
+        self.assertIsNone(worker.validate_events(start +
+                          b'{"type":"item.completed","item":{"type":"error","message":"retry"}}\n' +
+                          completed, SESSION))
+        self.assertEqual(worker.validate_events(start + b'{"type":"error","message":"fatal"}\n' +
+                         completed, SESSION), "CODEX_FAILED")
+        for raw in (b"not json\n", b"[]\n", b'{"type":"turn.completed","type":"turn.failed"}\n'):
+            with self.assertRaises(ValueError):
+                worker.validate_events(raw, SESSION)
+
+    def test_missing_codex_does_not_spend_attempt_and_can_resume_existing_empty_worktree(self):
+        with patch.object(worker, "invoke", side_effect=FileNotFoundError("not installed")):
+            with self.assertRaises(FileNotFoundError):
+                worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo", self.inputs,
+                           validation_mode="github")
+        state, log = self.pair()
+        self.assertEqual(state["status"], "IMPLEMENTING")
+        self.assertEqual(log["codex_worker"]["outcome"], "WORKER_UNAVAILABLE")
+        self.assertEqual(storage.load_json(storage.companion(self.task, "execution"))["attempts"], 0)
+        storage.load_checkpoint(self.task, state, log)
+        def implement(executable, session, prompt, cwd, **kwargs):
+            path = cwd / "app/src/main/java/Client.kt"
+            path.parent.mkdir(parents=True)
+            path.write_text("class Client\n", encoding="utf-8")
+            return 0, self.github_events(), None
+        with patch.object(worker, "invoke", side_effect=implement), patch.object(worker, "create_worktree") as create:
+            self.assertEqual(worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo", self.inputs,
+                             validation_mode="github", resume=True), "IMPLEMENTED")
+        create.assert_not_called()
+
+    def test_pinned_guidance_and_worktree_ignore_replace_objects_and_local_hooks(self):
+        original = (self.source / "AGENTS.md").read_text(encoding="utf-8")
+        (self.source / "AGENTS.md").write_text("Changed guidance outside the pinned input.\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.source), "add", "AGENTS.md"], check=True)
+        subprocess.run(["git", "-C", str(self.source), "-c", "user.name=Test", "-c",
+                        "user.email=test@example.invalid", "commit", "-qm", "replacement"], check=True)
+        replacement = subprocess.check_output(["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True).strip()
+        subprocess.run(["git", "-C", str(self.source), "replace", self.revision, replacement], check=True)
+        normal = subprocess.check_output(["git", "-C", str(self.source), "show", self.revision + ":AGENTS.md"], text=True)
+        self.assertNotEqual(normal, original)
+        self.assertEqual(worker.git(self.source, ["show", self.revision + ":AGENTS.md"]), original.strip())
+        hooks, marker = self.root / "hooks", self.root / "hook-executed"
+        hooks.mkdir()
+        hook = hooks / "post-checkout"
+        hook.write_text("#!/bin/sh\nprintf unexpected > '" + marker.as_posix() + "'\n", encoding="utf-8")
+        hook.chmod(hook.stat().st_mode | 0o111)
+        subprocess.run(["git", "-C", str(self.source), "config", "core.hooksPath", str(hooks)], check=True)
+        worker.create_worktree(self.source, self.worktree, "ax/sstc-sync/demo", self.revision)
+        self.assertEqual((self.worktree / "AGENTS.md").read_text(encoding="utf-8"), original)
+        self.assertFalse(marker.exists())
+
+    def test_launch_permission_error_does_not_spend_attempt(self):
+        with patch.object(worker, "invoke", side_effect=PermissionError("launch denied")):
+            with self.assertRaises(PermissionError):
+                worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo", self.inputs,
+                           validation_mode="github")
+        state, log = self.pair()
+        self.assertEqual(state["status"], "IMPLEMENTING")
+        self.assertEqual(log["codex_worker"]["outcome"], "WORKER_UNAVAILABLE")
+        self.assertEqual(storage.load_json(storage.companion(self.task, "execution"))["attempts"], 0)
+        storage.load_checkpoint(self.task, state, log)
+
+    def test_checkout_filters_require_review_before_task_write(self):
+        subprocess.run(["git", "-C", str(self.source), "config", "filter.untrusted.smudge", "untrusted-command"], check=True)
+        before = self.task.read_bytes()
+        with patch.object(worker, "invoke") as invoke:
+            with self.assertRaisesRegex(ValueError, "REPOSITORY_FILTER_REQUIRES_REVIEW"):
+                worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo", self.inputs,
+                           validation_mode="github")
+        invoke.assert_not_called()
+        self.assertEqual(self.task.read_bytes(), before)
+        self.assertNotIn("codex_worker", self.pair()[1])
+
+    def test_local_validation_restores_wrapper_mode_on_success_and_failure(self):
+        wrapper = self.source / "gradlew"
+        wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        wrapper.chmod(0o644)
+        original = wrapper.stat().st_mode
+        def completed(*args, **kwargs):
+            if os.name != "nt":
+                self.assertTrue(wrapper.stat().st_mode & 0o111)
+            return subprocess.CompletedProcess(args[0], 0, "", "")
+        with patch.object(worker.subprocess, "run", side_effect=completed):
+            self.assertEqual(worker.validation(self.source)[0], 0)
+        self.assertEqual(wrapper.stat().st_mode, original)
+        with patch.object(worker.subprocess, "run", side_effect=OSError("build unavailable")):
+            with self.assertRaises(OSError):
+                worker.validation(self.source)
+        self.assertEqual(wrapper.stat().st_mode, original)
 
 
 if __name__ == "__main__":

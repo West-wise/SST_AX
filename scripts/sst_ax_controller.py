@@ -17,6 +17,8 @@ from task_storage import atomic_json, checkpoint_path, companion, recover_pair, 
 
 TERMINAL = {"READY_FOR_REVIEW", "COMPLETED", "REJECTED", "ANALYSIS_FAILED", "IMPLEMENTATION_FAILED",
             "BUILD_FAILED", "TEST_FAILED", "SECURITY_REVIEW_FAILED", "PROTOCOL_APPROVAL_REQUIRED"}
+ANALYSIS_ENVIRONMENT_ERRORS = {"EXECUTABLE_NOT_FOUND", "EXECUTABLE_UNAVAILABLE", "PREFLIGHT_TIMEOUT",
+                               "CODEX_VERSION_UNSUPPORTED"}
 
 
 def configuration(path: Path) -> dict:
@@ -224,6 +226,8 @@ def drive(path: Path, event: dict, config: dict, client) -> str:
         if log.get("codex_analysis", {}).get("outcome") != "VALID":
             from codex_impact import run
             outcome = run(path, inputs, "codex")
+            if outcome in ANALYSIS_ENVIRONMENT_ERRORS:
+                raise ValueError(outcome)
             if outcome != "VALID":
                 return load_document(path)["status"]
         from execution_policy import decide
@@ -232,7 +236,7 @@ def drive(path: Path, event: dict, config: dict, client) -> str:
         inputs = path.with_name(path.stem + ".inputs")
         log = load_document(companion(path, "log"))
         receipt = log.get("codex_worker")
-        if receipt is None or receipt.get("outcome") in {"RATE_LIMIT", "CODEX_FAILED", "TIMEOUT", "INTERRUPTED"}:
+        if receipt is None or receipt.get("outcome") in {"RATE_LIMIT", "CODEX_FAILED", "TIMEOUT", "INTERRUPTED", "WORKER_UNAVAILABLE"}:
             from sstc_worker import run
             worktree = Path(receipt["worktree"]) if receipt else config["worktree_directory"] / path.stem
             branch = receipt["branch"] if receipt else "ax/sstc-sync/" + path.stem
@@ -268,14 +272,28 @@ def run_once(config: dict, client=None, approval=None) -> dict:
         new_events = discover(journal, config, client)
         client_commit = client.api("repos/" + REPOSITORIES["SSTC_FEATURE"] + "/commits/main").get("sha")
         require(isinstance(client_commit, str) and SHA.fullmatch(client_commit), "CLIENT_HEAD_REQUIRED")
+        reserved_ids = {event["task_id"] for event in journal["events"].values()}
+        reserved_events = []
         for event in new_events:
             key = event["key"]
             if key in journal["events"]:
                 continue
-            event.update(task_id=next_task_id(event["source_type"], tasks), sstc_revision=client_commit,
+            task_id = next_task_id(event["source_type"], tasks)
+            prefix, number = task_id.rsplit("-", 1)
+            sequence = int(number)
+            while task_id in reserved_ids:
+                sequence += 1
+                task_id = f"{prefix}-{sequence:04d}"
+            require(sequence <= 9999, "TASK_ID_SPACE_EXHAUSTED")
+            reserved_ids.add(task_id)
+            event.update(task_id=task_id, sstc_revision=client_commit,
                          failures=0, active_seconds=0, last_error=None)
             journal["events"][key] = event
-            atomic_json(path, journal)
+            reserved_events.append(event)
+        # Cursor, Release identities and every Task reservation commit together.
+        # A crash during materialization then rolls forward the entire batch.
+        atomic_json(path, journal)
+        for event in reserved_events:
             materialize(event, tasks)
         def poll_approvals(pending):
             nonlocal approval
@@ -300,7 +318,11 @@ def run_once(config: dict, client=None, approval=None) -> dict:
             task = tasks / (event["task_id"] + ".json")
             started = time.monotonic()
             if event["failures"] >= 3:
-                outcomes[event["task_id"]] = "ESCALATION_REQUIRED"
+                from execution_policy import stop_budget
+                with task_lock(task):
+                    stop_budget(task, "CONTROLLER_FAILURE_LIMIT")
+                status = load_document(task)["status"]
+                outcomes[event["task_id"]] = status if status in TERMINAL else "ESCALATION_REQUIRED"
                 continue
             try:
                 status = drive(task, event, config, client)
@@ -308,13 +330,20 @@ def run_once(config: dict, client=None, approval=None) -> dict:
                     waiting.append(task)
                 outcomes[event["task_id"]] = status
                 event["last_error"] = None
-            except Exception:
+            except Exception as error:
                 event["failures"] += 1
-                event["last_error"] = "CONTROLLER_INPUT_EXECUTION_OR_CONTEXT_FAILED"
+                reason = error.args[0] if isinstance(error, ValueError) and error.args else None
+                event["last_error"] = (reason if isinstance(reason, str) and reason in ANALYSIS_ENVIRONMENT_ERRORS
+                                       else "CONTROLLER_INPUT_EXECUTION_OR_CONTEXT_FAILED")
                 status = load_document(task)["status"]
-                if status == "ANALYZING":
+                if status == "ANALYZING" and event["last_error"] not in ANALYSIS_ENVIRONMENT_ERRORS:
                     move(task, "ANALYSIS_FAILED", event["last_error"])
                     status = "ANALYSIS_FAILED"
+                elif event["failures"] >= 3:
+                    from execution_policy import stop_budget
+                    with task_lock(task):
+                        stop_budget(task, "CONTROLLER_FAILURE_LIMIT")
+                    status = load_document(task)["status"]
                 outcomes[event["task_id"]] = status
             event["active_seconds"] += time.monotonic() - started
             atomic_json(path, journal)

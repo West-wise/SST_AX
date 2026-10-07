@@ -123,10 +123,11 @@ def approval_review(task_file: Path, request: dict) -> dict:
                 break
         if manifest is None or validate_impact(state, manifest, result):
             raise ValueError("Approval input or result is invalid")
-        return {
+        levels = ("NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL")
+        review = {
             "source_type": state["source_type"],
             "source_reference": state["source_reference"],
-            "risk_level": state["risk_level"],
+            "risk_level": max((state["risk_level"], result["risk_level"]), key=levels.index),
             "approval_reason": state["approval_reason"],
             "input_context": result["input_context"],
             "summary": result["summary"],
@@ -134,6 +135,8 @@ def approval_review(task_file: Path, request: dict) -> dict:
             "approval_reasons": result["approval_reasons"],
             "unresolved_questions": result["unresolved_questions"],
         }
+        check_content(canonical(review))
+        return review
 
 
 def apply_decision(task_file: Path, payload: dict, *, team_id: str, channel_id: str,

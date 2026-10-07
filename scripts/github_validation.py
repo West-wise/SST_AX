@@ -119,7 +119,7 @@ def read_archive(raw: bytes):
         return decode_document(archive.read(entry))
 
 
-def check_validation(task_file: Path, client=None) -> dict:
+def check_validation(task_file: Path, client=None, *, reconcile_run_id: int | None = None) -> dict:
     path = task_file.absolute()
     client = client or GitHub()
     prefix = f"repos/{REPOSITORY}"
@@ -128,6 +128,12 @@ def check_validation(task_file: Path, client=None) -> dict:
         require(record.get("repository") == REPOSITORY and record.get("authorization") == "NONE" and
                 record.get("schema_version") == "1.0", "REQUEST_REFUSED")
         require(snapshot(path) == record.get("task_snapshot") and record.get("task_id") == path.stem, "TASK_SNAPSHOT_CHANGED")
+        if reconcile_run_id is not None:
+            require(record.get("outcome") == "DISPATCH_UNCERTAIN" and record.get("run_id") is None and
+                    positive(reconcile_run_id), "DISPATCH_RECONCILIATION_REQUIRED")
+            # Work on the decoded copy. No journal mutation is allowed before the
+            # run's successful artifact proves the exact Task and candidate inputs.
+            record["run_id"] = reconcile_run_id
         require(positive(record.get("run_id")) and record.get("run_attempt") == 1 and
                 type(record["run_attempt"]) is int and positive(record.get("workflow_id")), "REQUEST_RUN_REQUIRED")
         require(all(isinstance(record.get(k), str) and SHA.fullmatch(record[k]) is not None
@@ -140,9 +146,11 @@ def check_validation(task_file: Path, client=None) -> dict:
                 run.get("head_sha") == record["workflow_sha"] and run.get("path") == WORKFLOW and
                 type(run.get("run_attempt")) is int and run["run_attempt"] == record["run_attempt"], "RUN_IDENTITY_MISMATCH")
         if run.get("status") != "completed":
+            require(reconcile_run_id is None, "COMPLETED_RECEIPT_REQUIRED_FOR_RECONCILIATION")
             require(run.get("status") in {"queued", "in_progress", "waiting", "requested", "pending"}, "RUN_STATUS_REFUSED")
             record["outcome"] = "PENDING"
         elif run.get("conclusion") != "success":
+            require(reconcile_run_id is None, "COMPLETED_RECEIPT_REQUIRED_FOR_RECONCILIATION")
             record["outcome"] = "FAILED"
         else:
             jobs = client.api(f"{prefix}/actions/runs/{run_id}/attempts/1/jobs?per_page=100")

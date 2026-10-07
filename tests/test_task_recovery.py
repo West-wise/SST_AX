@@ -104,6 +104,57 @@ class RecoveryTest(unittest.TestCase):
             self.move("IMPLEMENTING", success=False)
         self.move("IMPLEMENTING")
 
+    def test_pair_and_both_checkpoints_recover_after_each_write_boundary(self):
+        targets = [self.path, storage.companion(self.path, "log"),
+                   storage.checkpoint_path(self.path), storage.companion(self.path, "codex-checkpoint")]
+        for index, target in enumerate(targets):
+            with self.subTest(target=target.name):
+                state = storage.load_json(self.path)
+                log = storage.load_json(storage.companion(self.path, "log"))
+                log["checkpoint_test_revision"] = index
+                real_write = storage.atomic_json
+
+                def interrupt(path, value):
+                    if path == target:
+                        raise OSError("interrupted write")
+                    real_write(path, value)
+
+                with patch.object(storage, "atomic_json", side_effect=interrupt):
+                    with self.assertRaises(OSError):
+                        storage.save_pair(self.path, state, log,
+                                          checkpoint_status="ANALYZING", codex_checkpoint=True)
+                with storage.task_lock(self.path):
+                    storage.recover_pair(self.path)
+                    storage.recover_pair(self.path)
+                self.assertEqual(storage.load_json(self.path), state)
+                self.assertEqual(storage.load_json(storage.companion(self.path, "log")), log)
+                for checkpoint in targets[2:]:
+                    self.assertEqual(storage.load_json(checkpoint),
+                                     {"state": state, "log": log, "resume_status": "ANALYZING"})
+                self.assertFalse(storage.companion(self.path, "pending").exists())
+
+    def test_checkpoint_options_reject_invalid_values_before_any_write(self):
+        state = storage.load_json(self.path)
+        log = storage.load_json(storage.companion(self.path, "log"))
+        before = self.path.read_bytes()
+        for options in ({"checkpoint_status": "../../outside"}, {"codex_checkpoint": "yes"}):
+            with self.assertRaises(ValueError):
+                storage.save_pair(self.path, state, log, **options)
+            self.assertEqual(self.path.read_bytes(), before)
+            self.assertFalse(storage.companion(self.path, "pending").exists())
+
+    def test_process_confirmation_refuses_live_pid_and_confirms_exited_pid(self):
+        with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"]) as process:
+            try:
+                self.assertFalse(storage.process_stopped(process.pid))
+            finally:
+                process.terminate()
+                process.wait(timeout=5)
+            self.assertTrue(storage.process_stopped(process.pid))
+        for value in (True, 0, -1, "123", None):
+            with self.assertRaisesRegex(ValueError, "PROCESS_CONFIRMATION_REQUIRED"):
+                storage.process_stopped(value)
+
     def test_foreign_log_rejected(self):
         log_path = storage.companion(self.path, "log")
         log = storage.load_json(log_path)
@@ -128,3 +179,18 @@ class RecoveryTest(unittest.TestCase):
         result = self.run_script("update_task_state.py", "--task-file", str(self.path), "--recover")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.path.read_bytes(), before)
+
+    def test_secret_reason_never_changes_state_log_or_checkpoint(self):
+        synthetic = "xoxb-" + "synthetic-for-test-only-1234567890"
+        for status in ("WAITING_APPROVAL", "ANALYSIS_FAILED"):
+            with self.subTest(status=status):
+                state_before = self.path.read_bytes()
+                log_path = storage.companion(self.path, "log")
+                log_before = log_path.read_bytes()
+                checkpoint = storage.checkpoint_path(self.path)
+                result = self.move(status, "--reason", synthetic, success=False)
+                self.assertNotIn(synthetic, result.stdout + result.stderr)
+                self.assertEqual(self.path.read_bytes(), state_before)
+                self.assertEqual(log_path.read_bytes(), log_before)
+                self.assertFalse(checkpoint.exists())
+                self.assertFalse(storage.companion(self.path, "pending").exists())

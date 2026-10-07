@@ -104,6 +104,40 @@ class TaskCliTest(unittest.TestCase):
             self.assertEqual(created.returncode, 2)
             self.assertIn("does not match required pattern", created.stderr)
 
+    def test_creation_rejects_recognizable_secrets_without_state_or_output(self) -> None:
+        token = "xapp-1-A123456-T123456-abcdefghijklmnopqrstuvwxyz012345"
+        for field, value in (("--source-reference", token), ("--approval-reason", token),
+                             ("--branch", "ax/sstc-sync/" + token),
+                             ("--checkpoint-path", "state/checkpoints/" + token + ".json")):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary_directory:
+                arguments = ["--source-type", "SSTC_FEATURE", "--source-reference", "manual:test",
+                             "--task-id", "sstc-feature-20261007-0001", "--task-directory", temporary_directory]
+                arguments += [field, value]
+                created = self.run_script("create_task.py", *arguments)
+                self.assertEqual(created.returncode, 2)
+                self.assertEqual(created.stdout, "")
+                self.assertNotIn(token, created.stderr)
+                self.assertEqual(list(Path(temporary_directory).iterdir()), [])
+
+    def test_creation_usage_errors_do_not_echo_secrets(self) -> None:
+        token = "xapp-1-A123456-T123456-abcdefghijklmnopqrstuvwxyz012345"
+        result = self.run_script("create_task.py", "--risk-level", token)
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn(token, result.stdout + result.stderr)
+
+    def test_task_validation_errors_do_not_echo_untrusted_keys_or_uri_hosts(self) -> None:
+        token = "xapp-1-A123456-T123456-abcdefghijklmnopqrstuvwxyz012345"
+        fixture = json.loads((REPOSITORY_ROOT / "tests/fixtures/impact/sstc-required.json").read_text(encoding="utf-8"))
+        for value in ({**fixture["task"], token: "synthetic"},
+                      {**fixture["task"], "draft_pr_url": "https://[" + token + "]/"}):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                path = Path(temporary_directory) / "task.json"
+                path.write_text(json.dumps(value), encoding="utf-8")
+                result = self.run_script("validate_task_state.py", str(path))
+                self.assertEqual(result.returncode, 1)
+                self.assertNotIn(token, result.stdout + result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
     def test_collects_sstd_commit_evidence_without_source_write(self) -> None:
         """An SSTD task records Git evidence from a local source repository."""
         with tempfile.TemporaryDirectory() as temporary_directory:

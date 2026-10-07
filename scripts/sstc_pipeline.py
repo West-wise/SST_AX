@@ -5,7 +5,7 @@ import copy
 from pathlib import Path
 from urllib.parse import quote
 
-from codex_impact import approved_session, bundle, regular
+from codex_impact import regular
 from github_validation import (GitHub, REPOSITORY, SHA, check_validation, digest,
                                positive, request_validation, require, snapshot, validate_receipt)
 from impact_collection import check_content
@@ -81,6 +81,46 @@ def verify_ref(client, record: dict) -> None:
             ref["object"].get("sha") == record["candidate_sha"], "REMOTE_BRANCH_CHANGED")
 
 
+def mark_published(path: Path, record: dict, state: dict, log: dict) -> None:
+    """Journal the exact publication transition before changing the Task pair."""
+    if "publication_pair" not in record:
+        transition(state, log, "VALIDATING", "Controller published approval-bound candidate")
+        log["sstc_candidate"] = {key: record[key] for key in
+            ("repository", "source_revision", "candidate_sha", "tree_sha", "branch", "candidate_files")}
+        log["commands"].append({"name": "sstc-pipeline-publish",
+            "command": ["run_sstc_pipeline.py", "publish", "--task-file", str(path)],
+            "exit_code": 0, "started_at": utc_now(), "finished_at": utc_now(),
+            "artifact_paths": [record_path(path).name]})
+        record["publication_pair"] = {"state": state, "log": log}
+        record["publication_snapshot"] = {"task_id": path.stem, "state": digest(state),
+            "log": digest(log), "checkpoint": record["task_snapshot"]["checkpoint"]}
+        atomic_json(record_path(path), record)
+    else:
+        intended = record["publication_pair"]
+        validate_pair(path, intended["state"], intended["log"])
+        expected_state, expected_log = copy.deepcopy(state), copy.deepcopy(log)
+        now = intended["state"]["updated_at"]
+        expected_state.update(status="VALIDATING", updated_at=now)
+        expected_log["status"] = "VALIDATING"
+        expected_log["state_transitions"].append({"from_status": "IMPLEMENTING", "to_status": "VALIDATING",
+            "occurred_at": now, "reason": "Controller published approval-bound candidate"})
+        expected_log["sstc_candidate"] = {key: record[key] for key in
+            ("repository", "source_revision", "candidate_sha", "tree_sha", "branch", "candidate_files")}
+        entry = intended["log"]["commands"][-1]
+        expected_log["commands"].append({"name": "sstc-pipeline-publish",
+            "command": ["run_sstc_pipeline.py", "publish", "--task-file", str(path)],
+            "exit_code": 0, "started_at": entry.get("started_at"), "finished_at": entry.get("finished_at"),
+            "artifact_paths": [record_path(path).name]})
+        require(intended == {"state": expected_state, "log": expected_log}, "PUBLICATION_TRANSITION_REFUSED")
+    intended = record["publication_pair"]
+    validate_pair(path, intended["state"], intended["log"])
+    require(intended["state"]["status"] == "VALIDATING", "PUBLICATION_TRANSITION_REFUSED")
+    save_pair(path, intended["state"], intended["log"])
+    require(snapshot(path) == record["publication_snapshot"], "PUBLICATION_TRANSITION_REFUSED")
+    record.update(outcome="DISPATCH_UNCERTAIN", task_snapshot=snapshot(path))
+    atomic_json(record_path(path), record)
+
+
 def publish(task_file: Path, input_directory: Path, client=None) -> dict:
     path = task_file.absolute()
     client = BudgetClient(client or GitHub(), path)
@@ -90,8 +130,18 @@ def publish(task_file: Path, input_directory: Path, client=None) -> dict:
         require(not record_path(path).exists() and not companion(path, "github-validation").exists(),
                 "PIPELINE_EXISTS_NO_AUTOMATIC_REPUBLISH")
         worker = log.get("codex_worker", {})
-        require(worker.get("outcome") == "IMPLEMENTED" and worker.get("validation_mode") == "github",
-                "REMOTE_IMPLEMENTATION_REQUIRED")
+        require(worker.get("outcome") == "IMPLEMENTED" and worker.get("validation_mode") in {"github", "local"},
+                "IMPLEMENTATION_REQUIRED")
+        if worker["validation_mode"] == "local":
+            receipt = worker.get("validation", {})
+            require(isinstance(receipt, dict) and
+                    receipt.get("command") == "./gradlew testDebugUnitTest assembleDebug" and
+                    type(receipt.get("exit_code")) is int and receipt["exit_code"] == 0 and
+                    worker.get("validation_plan", {}).get("revision") == worker.get("source_revision") and
+                    worker["validation_plan"].get("jdk") == "17" and
+                    worker["validation_plan"].get("commands") ==
+                    ["chmod +x gradlew", "./gradlew testDebugUnitTest assembleDebug"],
+                    "LOCAL_VALIDATION_RECEIPT_REQUIRED")
         ctx = execution_context(path, input_directory.absolute())
         entry = log["commands"][-1]
         manifest, session = ctx["manifest"], ctx["session_id"]
@@ -132,16 +182,7 @@ def publish(task_file: Path, input_directory: Path, client=None) -> dict:
              {"ref": "refs/heads/" + branch, "sha": record["candidate_sha"]}, "PUBLISH_UNCERTAIN")
         verify_ref(client, record)
         context(path, record)
-        transition(state, log, "VALIDATING", "Controller published approval-bound candidate")
-        log["sstc_candidate"] = {key: record[key] for key in
-                                  ("repository", "source_revision", "candidate_sha", "tree_sha", "branch", "candidate_files")}
-        log["commands"].append({"name": "sstc-pipeline-publish",
-                                "command": ["run_sstc_pipeline.py", "publish", "--task-file", str(path)],
-                                "exit_code": 0, "started_at": utc_now(), "finished_at": utc_now(),
-                                "artifact_paths": [record_path(path).name]})
-        save_pair(path, state, log)
-        record.update(outcome="DISPATCH_UNCERTAIN", task_snapshot=snapshot(path))
-        atomic_json(record_path(path), record)
+        mark_published(path, record, state, log)
     result = request_validation(path, record["candidate_sha"], client)
     with task_lock(path):
         context(path, record)
@@ -149,6 +190,86 @@ def publish(task_file: Path, input_directory: Path, client=None) -> dict:
                 result.get("candidate_sha") == record["candidate_sha"], "VALIDATION_REQUEST_MISMATCH")
         record.update(outcome="PENDING", run_id=result["run_id"])
         atomic_json(record_path(path), record)
+    return record
+
+
+def reconcile(task_file: Path, client=None) -> dict:
+    """Verify an existing candidate ref; never repeat a publication or dispatch POST."""
+    path = task_file.absolute()
+    client = BudgetClient(client or GitHub(), path)
+    with task_lock(path):
+        record = load_document(record_path(path))
+        require(record.get("outcome") == "PUBLISH_UNCERTAIN", "PUBLICATION_RECONCILIATION_REQUIRED")
+        if "publication_pair" in record:
+            intended = record["publication_pair"]
+            require(record.get("publication_snapshot") == {"task_id": path.stem,
+                "state": digest(intended["state"]), "log": digest(intended["log"]),
+                "checkpoint": record["task_snapshot"]["checkpoint"]}, "PUBLICATION_TRANSITION_REFUSED")
+        # A process may have saved the Task pair and died before updating the journal.
+        if "publication_snapshot" in record and snapshot(path) == record["publication_snapshot"]:
+            record["task_snapshot"] = record["publication_snapshot"]
+        state, log, _ = context(path, record)
+        require(state["status"] in {"IMPLEMENTING", "VALIDATING"}, "PUBLICATION_RECONCILIATION_REQUIRED")
+        verify_commit(client, record)
+        verify_ref(client, record)
+        if state["status"] == "IMPLEMENTING":
+            mark_published(path, record, state, log)
+        else:
+            record.update(outcome="DISPATCH_UNCERTAIN", task_snapshot=snapshot(path))
+            atomic_json(record_path(path), record)
+        return record
+
+
+def abort(task_file: Path) -> dict:
+    """End an unresolvable publication safely while retaining every receipt and ref."""
+    path = task_file.absolute()
+    with task_lock(path):
+        record = load_document(record_path(path))
+        state, log = pair(path)
+        require(record.get("task_id") == path.stem and record.get("repository") == REPOSITORY and
+                record.get("outcome") in {"PUBLISH_UNCERTAIN", "DISPATCH_UNCERTAIN", "PR_UNCERTAIN", "FINALIZING"},
+                "UNCERTAIN_PIPELINE_REQUIRED")
+        if record["outcome"] == "FINALIZING" and "abort_snapshot" in record:
+            return finish_abort(path, record, state, log)
+        require(state["status"] in {"IMPLEMENTING", "VALIDATING"}, "UNCERTAIN_PIPELINE_REQUIRED")
+        record["abort_snapshot"] = snapshot(path)
+        target = "IMPLEMENTATION_FAILED" if state["status"] == "IMPLEMENTING" else "BUILD_FAILED"
+        transition(state, log, target, "Operator aborted unresolved remote request")
+        log.update(stop_reason="PIPELINE_ABORTED", finished_at=state["updated_at"])
+        record.update(outcome="FINALIZING", final_outcome=target, final_pair={"state": state, "log": log},
+            final_snapshot={"task_id": path.stem, "state": digest(state), "log": digest(log),
+                "checkpoint": snapshot(path)["checkpoint"]})
+        atomic_json(record_path(path), record)
+        # Reload the unchanged pair to validate the exact journalled transition.
+        return finish_abort(path, record, *pair(path))
+
+
+def finish_abort(path: Path, record: dict, state: dict, log: dict) -> dict:
+    """Replay only the terminal abort pair; never interpret it as execution authority."""
+    intended, target = record["final_pair"], record["final_outcome"]
+    require(record.get("task_id") == path.stem and record.get("repository") == REPOSITORY and
+            target in {"IMPLEMENTATION_FAILED", "BUILD_FAILED"}, "ABORT_TRANSITION_REFUSED")
+    validate_pair(path, intended["state"], intended["log"])
+    require(intended["state"]["status"] == target and intended["log"].get("stop_reason") == "PIPELINE_ABORTED",
+            "ABORT_TRANSITION_REFUSED")
+    current = snapshot(path)
+    require(record["final_snapshot"] == {"task_id": path.stem, "state": digest(intended["state"]),
+        "log": digest(intended["log"]), "checkpoint": current["checkpoint"]}, "ABORT_TRANSITION_REFUSED")
+    if current != record["final_snapshot"]:
+        require(current == record["abort_snapshot"] and state["status"] in {"IMPLEMENTING", "VALIDATING"} and
+                target == ("IMPLEMENTATION_FAILED" if state["status"] == "IMPLEMENTING" else "BUILD_FAILED"),
+                "ABORT_CONTEXT_CHANGED")
+        expected_state, expected_log = copy.deepcopy(state), copy.deepcopy(log)
+        now = intended["state"]["updated_at"]
+        expected_state.update(status=target, updated_at=now)
+        expected_log.update(status=target, stop_reason="PIPELINE_ABORTED", finished_at=now)
+        expected_log["state_transitions"].append({"from_status": state["status"], "to_status": target,
+            "occurred_at": now, "reason": "Operator aborted unresolved remote request"})
+        require(intended == {"state": expected_state, "log": expected_log}, "ABORT_TRANSITION_REFUSED")
+        save_pair(path, intended["state"], intended["log"])
+    require(snapshot(path) == record["final_snapshot"], "ABORT_TRANSITION_REFUSED")
+    record["outcome"] = target
+    atomic_json(record_path(path), record)
     return record
 
 
@@ -190,13 +311,15 @@ def check(task_file: Path, client=None) -> dict:
     client = BudgetClient(client or GitHub(), path)
     with task_lock(path):
         record = load_document(record_path(path))
-        if record["outcome"] in {"READY_FOR_REVIEW", "BUILD_FAILED"}:
+        if record["outcome"] in {"READY_FOR_REVIEW", "BUILD_FAILED", "IMPLEMENTATION_FAILED"}:
             require(snapshot(path) == record["final_snapshot"], "PIPELINE_CONTEXT_CHANGED")
             return record
         if record["outcome"] == "FINALIZING" and snapshot(path) == record["final_snapshot"]:
             record["outcome"] = record["final_outcome"]
             atomic_json(record_path(path), record)
             return record
+        if record["outcome"] == "FINALIZING" and "abort_snapshot" in record:
+            return finish_abort(path, record, *pair(path))
         context(path, record)
         require(record["outcome"] in {"PENDING", "DISPATCH_UNCERTAIN", "PR_UNCERTAIN", "FINALIZING"},
                 "PUBLICATION_UNCERTAIN_REQUIRES_RECONCILIATION")

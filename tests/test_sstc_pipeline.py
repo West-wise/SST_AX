@@ -218,7 +218,7 @@ class SstcPipelineTest(unittest.TestCase):
             self.publish()
         self.assertEqual(self.client.calls, [])
 
-    def test_unsuccessful_or_local_worker_is_not_publishable(self):
+    def test_unsuccessful_or_unverified_local_worker_is_not_publishable(self):
         state, original = self.pair()
         for field, value in (("outcome", "WORKER_FAILED"), ("validation_mode", "local")):
             with self.subTest(field=field):
@@ -228,6 +228,18 @@ class SstcPipelineTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.publish()
                 self.assertEqual(self.client.calls, [])
+
+    def test_verified_local_worker_still_requires_candidate_actions(self):
+        state, log = self.pair()
+        log["codex_worker"].update(validation_mode="local",
+            validation={"command": "./gradlew testDebugUnitTest assembleDebug", "exit_code": 0})
+        storage.save_pair(self.path, state, log)
+        result = self.publish()
+        self.assertEqual(result["outcome"], "PENDING")
+        self.assertEqual(self.pair()[0]["status"], "VALIDATING")
+        self.assertFalse(any(endpoint == PREFIX + "/pulls" for endpoint, _, _ in self.client.calls))
+        self.assertEqual(sum(endpoint.endswith("/dispatches") and payload is not None
+            for endpoint, payload, _ in self.client.calls), 1)
 
     def test_worker_exit_false_nonzero_or_command_change_rejects(self):
         state, original = self.pair()
@@ -275,6 +287,140 @@ class SstcPipelineTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             pipeline.check(self.path, self.client)
         self.assertEqual(sum(endpoint == dispatch for endpoint, _, _ in self.client.calls), 1)
+
+    def test_lost_ref_response_reconciles_without_another_publication_post(self):
+        self.client.overrides[PREFIX + "/git/refs"] = TimeoutError("response lost")
+        with self.assertRaises(TimeoutError):
+            self.publish()
+        before = len(self.client.calls)
+        record = pipeline.reconcile(self.path, self.client)
+        self.assertEqual(record["outcome"], "DISPATCH_UNCERTAIN")
+        self.assertEqual(self.pair()[0]["status"], "VALIDATING")
+        self.assertTrue(all(payload is None for _, payload, _ in self.client.calls[before:]))
+        self.assertEqual(self.checkpoint.read_bytes(), self.checkpoint_bytes)
+        sensor.request_validation(self.path, CANDIDATE, self.client)
+        self.client.run_status = "completed"
+        self.assertEqual(pipeline.check(self.path, self.client)["outcome"], "READY_FOR_REVIEW")
+
+    def test_publication_pair_survives_crash_before_journal_phase_change(self):
+        original = pipeline.atomic_json
+        def interrupt(path, value):
+            if path == pipeline.record_path(self.path) and value.get("outcome") == "DISPATCH_UNCERTAIN":
+                raise OSError("interrupted journal update")
+            original(path, value)
+        with patch.object(pipeline, "atomic_json", side_effect=interrupt), self.assertRaises(OSError):
+            self.publish()
+        self.assertEqual(self.pair()[0]["status"], "VALIDATING")
+        self.assertEqual(storage.load_json(pipeline.record_path(self.path))["outcome"], "PUBLISH_UNCERTAIN")
+        before = len(self.client.calls)
+        result = pipeline.reconcile(self.path, self.client)
+        self.assertEqual(result["outcome"], "DISPATCH_UNCERTAIN")
+        self.assertTrue(all(payload is None for _, payload, _ in self.client.calls[before:]))
+
+    def test_publication_journal_replays_exact_transition_after_pair_write_failure(self):
+        before = self.pair()
+        with patch.object(pipeline, "save_pair", side_effect=OSError("pair write interrupted")), \
+                self.assertRaises(OSError):
+            self.publish()
+        self.assertEqual(self.pair(), before)
+        intended = storage.load_json(pipeline.record_path(self.path))["publication_pair"]
+        result = pipeline.reconcile(self.path, self.client)
+        self.assertEqual(result["outcome"], "DISPATCH_UNCERTAIN")
+        self.assertEqual(self.pair(), (intended["state"], intended["log"]))
+
+    def test_uncertain_dispatch_abort_is_terminal_and_preserves_remote_receipts(self):
+        endpoint = PREFIX + "/actions/workflows/sstc-validation.yml/dispatches"
+        self.client.overrides[endpoint] = TimeoutError("response lost")
+        with self.assertRaises(TimeoutError):
+            self.publish()
+        receipt = sensor.record_path(self.path).read_bytes()
+        calls = copy.deepcopy(self.client.calls)
+        result = pipeline.abort(self.path)
+        self.assertEqual(result["outcome"], "BUILD_FAILED")
+        self.assertEqual(self.pair()[0]["status"], "BUILD_FAILED")
+        self.assertEqual(sensor.record_path(self.path).read_bytes(), receipt)
+        self.assertEqual(self.client.calls, calls)
+        self.assertEqual(self.checkpoint.read_bytes(), self.checkpoint_bytes)
+        self.assertEqual(pipeline.check(self.path, self.client), result)
+
+    def test_abort_journal_replays_before_pending_pair_exists_without_sensor_request(self):
+        self.client.overrides[PREFIX + "/git/trees"] = TimeoutError("response lost")
+        with self.assertRaises(TimeoutError):
+            self.publish()
+        before = self.pair()
+        calls = copy.deepcopy(self.client.calls)
+        with patch.object(pipeline, "save_pair", side_effect=OSError("before pending journal")), \
+                self.assertRaises(OSError):
+            pipeline.abort(self.path)
+        self.assertEqual(self.pair(), before)
+        self.assertFalse(storage.companion(self.path, "pending").exists())
+        record = storage.load_json(pipeline.record_path(self.path))
+        self.assertEqual(record["outcome"], "FINALIZING")
+        self.assertFalse(sensor.record_path(self.path).exists())
+        result = pipeline.check(self.path, self.client)
+        self.assertEqual(result["outcome"], "IMPLEMENTATION_FAILED")
+        self.assertEqual(self.pair(), (record["final_pair"]["state"], record["final_pair"]["log"]))
+        self.assertEqual(self.client.calls, calls)
+        self.assertEqual(self.checkpoint.read_bytes(), self.checkpoint_bytes)
+
+    def test_abort_replay_refuses_changes_to_the_recorded_pair(self):
+        self.client.overrides[PREFIX + "/git/trees"] = TimeoutError("response lost")
+        with self.assertRaises(TimeoutError):
+            self.publish()
+        with patch.object(pipeline, "save_pair", side_effect=OSError("before pending journal")), \
+                self.assertRaises(OSError):
+            pipeline.abort(self.path)
+        before = self.pair()
+        record = storage.load_json(pipeline.record_path(self.path))
+        record["final_pair"]["log"]["approvals"].clear()
+        record["final_snapshot"]["log"] = sensor.digest(record["final_pair"]["log"])
+        storage.atomic_json(pipeline.record_path(self.path), record)
+        with self.assertRaisesRegex(ValueError, "ABORT_TRANSITION_REFUSED"):
+            pipeline.abort(self.path)
+        self.assertEqual(self.pair(), before)
+
+    def test_reconciliation_ref_mismatch_preserves_uncertain_pair(self):
+        self.client.overrides[PREFIX + "/git/refs"] = TimeoutError("response lost")
+        with self.assertRaises(TimeoutError):
+            self.publish()
+        before = self.pair(), pipeline.record_path(self.path).read_bytes()
+        self.client.branch_sha = "f" * 40
+        with self.assertRaisesRegex(ValueError, "REMOTE_BRANCH_CHANGED"):
+            pipeline.reconcile(self.path, self.client)
+        self.assertEqual((self.pair(), pipeline.record_path(self.path).read_bytes()), before)
+
+    def test_unknown_candidate_can_be_aborted_without_touching_remote_or_approval(self):
+        self.client.overrides[PREFIX + "/git/trees"] = TimeoutError("response lost")
+        with self.assertRaises(TimeoutError):
+            self.publish()
+        calls = copy.deepcopy(self.client.calls)
+        with self.assertRaisesRegex(ValueError, "CANDIDATE_SHA_REQUIRED"):
+            pipeline.reconcile(self.path, self.client)
+        result = pipeline.abort(self.path)
+        self.assertEqual(result["outcome"], "IMPLEMENTATION_FAILED")
+        self.assertEqual(self.pair()[0]["status"], "IMPLEMENTATION_FAILED")
+        self.assertEqual(self.client.calls, calls)
+        self.assertEqual(self.checkpoint.read_bytes(), self.checkpoint_bytes)
+        self.assertEqual(pipeline.check(self.path, self.client), result)
+
+    def test_lost_dispatch_reconciles_only_completed_matching_task_receipt(self):
+        endpoint = PREFIX + "/actions/workflows/sstc-validation.yml/dispatches"
+        self.client.overrides[endpoint] = TimeoutError("response lost")
+        with self.assertRaises(TimeoutError):
+            self.publish()
+        before = sensor.record_path(self.path).read_bytes()
+        with self.assertRaisesRegex(ValueError, "COMPLETED_RECEIPT_REQUIRED_FOR_RECONCILIATION"):
+            sensor.check_validation(self.path, self.client, reconcile_run_id=RUN_ID)
+        self.assertEqual(sensor.record_path(self.path).read_bytes(), before)
+        self.client.run_status = "completed"
+        self.client.receipt_change = lambda receipt: receipt.update(task_id="sstc-feature-20260912-9999")
+        with self.assertRaisesRegex(ValueError, "RECEIPT_MISMATCH"):
+            sensor.check_validation(self.path, self.client, reconcile_run_id=RUN_ID)
+        self.assertEqual(sensor.record_path(self.path).read_bytes(), before)
+        self.client.receipt_change = None
+        self.assertEqual(sensor.check_validation(self.path, self.client, reconcile_run_id=RUN_ID)["outcome"], "VALIDATED")
+        self.assertEqual(pipeline.check(self.path, self.client)["outcome"], "READY_FOR_REVIEW")
+        self.assertEqual(sum(ep == endpoint and payload is not None for ep, payload, _ in self.client.calls), 1)
 
     def test_failed_build_transitions_failure_and_never_creates_pr(self):
         self.publish()

@@ -4,16 +4,22 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 from pathlib import Path
 
-from validate_task_state import DEFAULT_SCHEMA_PATH, load_json, validate_task_state
+from impact_collection import Git, check_content
+from impact_validation import load_document
+from validate_task_state import DEFAULT_SCHEMA_PATH, validate_task_state
 
 MAX_EVIDENCE_LENGTH = 30_000
 
 
-def run_git(repository: Path, arguments: list[str]) -> str:
+class SafeParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        self.exit(2, "IMPACT_REPORT_ERROR=INVALID_ARGUMENTS; see --help\n")
+
+
+def run_git(repository: Git, arguments: list[str]) -> str:
     """Run a read-only Git command and return its standard output.
 
     Args:
@@ -24,19 +30,11 @@ def run_git(repository: Path, arguments: list[str]) -> str:
         Command standard output.
 
     Raises:
-        RuntimeError: If Git cannot collect the requested evidence.
+        ValueError: If bounded Git evidence is unavailable or contains a recognizable secret.
     """
-    result = subprocess.run(
-        ["git", *arguments],
-        cwd=repository,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "unknown Git error"
-        raise RuntimeError(detail)
-    return result.stdout
+    raw = repository.run(arguments)
+    check_content(raw)
+    return raw.decode("utf-8")
 
 
 def truncate(value: str) -> str:
@@ -48,7 +46,7 @@ def truncate(value: str) -> str:
 
 def parse_args() -> argparse.Namespace:
     """Parse impact analysis arguments."""
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = SafeParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--task-file", type=Path, required=True, help="Schema-valid task state")
     parser.add_argument(
         "--source-repository",
@@ -62,14 +60,13 @@ def main() -> int:
     """Write a deterministic, read-only impact evidence report."""
     args = parse_args()
     try:
-        task_state = load_json(args.task_file)
-        errors = validate_task_state(task_state, load_json(DEFAULT_SCHEMA_PATH))
-    except (OSError, ValueError) as error:
-        print(f"Task load failed: {error}", file=sys.stderr)
+        task_state = load_document(args.task_file)
+        errors = validate_task_state(task_state, load_document(DEFAULT_SCHEMA_PATH))
+    except (OSError, ValueError):
+        print("IMPACT_REPORT_ERROR=TASK_READ", file=sys.stderr)
         return 2
     if errors:
-        print("Task state is invalid:", file=sys.stderr)
-        print("\n".join(errors), file=sys.stderr)
+        print("IMPACT_REPORT_ERROR=TASK_SCHEMA", file=sys.stderr)
         return 2
 
     report_path = args.task_file.with_suffix(".impact.md")
@@ -86,19 +83,16 @@ def main() -> int:
 
     if task_state["source_type"] == "SSTD_CHANGE":
         if args.source_repository is None:
-            print("--source-repository is required for SSTD_CHANGE.", file=sys.stderr)
-            return 2
-        repository = args.source_repository.resolve()
-        if not (repository / ".git").exists():
-            print(f"Not a Git repository: {repository}", file=sys.stderr)
+            print("IMPACT_REPORT_ERROR=SOURCE_REPOSITORY_REQUIRED", file=sys.stderr)
             return 2
         reference = task_state["source_reference"]
         try:
-            revision = run_git(repository, ["rev-parse", "--verify", f"{reference}^{{commit}}"])
-            changed_files = run_git(repository, ["diff-tree", "--no-commit-id", "--name-only", "-r", reference])
-            summary = run_git(repository, ["show", "--format=fuller", "--stat", "--no-ext-diff", reference, "--"])
-        except RuntimeError as error:
-            print(f"Git evidence collection failed: {error}", file=sys.stderr)
+            repository = Git(args.source_repository)
+            revision = repository.resolve(reference)
+            changed_files = run_git(repository, ["diff-tree", "--no-commit-id", "--name-only", "-r", revision])
+            summary = run_git(repository, ["show", "--format=fuller", "--stat", "--no-ext-diff", revision, "--"])
+        except (OSError, ValueError):
+            print("IMPACT_REPORT_ERROR=GIT_EVIDENCE", file=sys.stderr)
             return 1
         lines.extend(
             [
@@ -131,7 +125,13 @@ def main() -> int:
             ]
         )
 
-    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        raw = ("\n".join(lines) + "\n").encode("utf-8")
+        check_content(raw)
+        report_path.write_bytes(raw)
+    except (OSError, ValueError):
+        print("IMPACT_REPORT_ERROR=REPORT_REJECTED_OR_UNWRITABLE", file=sys.stderr)
+        return 1
     print(f"IMPACT_REPORT={report_path}")
     return 0
 

@@ -7,26 +7,39 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import tempfile
 import threading
 import time
 
-from codex_impact import SESSION_ID, approved_session, canonical, worker_environment
-from impact_validation import load_document
-from task_storage import atomic_json, companion, save_pair, task_lock, validate_pair
-from execution_policy import Budget, defer, execution_context, pair, stop_budget, transition
+from codex_impact import SESSION_ID, digest, regular, worker_environment
+from impact_validation import decode_document, load_document
+from task_storage import atomic_json, companion, process_stopped, save_pair, task_lock
+from execution_policy import Budget, defer, execution_context, pair, reconcile_budget, stop_budget, transition
 
 BRANCH = re.compile(r"^ax/sstc-sync/[a-z0-9][a-z0-9._/-]{0,79}$")
 MAX_EVENTS = 8 * 1_048_576
 TIMEOUT = 30 * 60
 VALIDATION = ["./gradlew", "testDebugUnitTest", "assembleDebug"]
+SAFE_FAILURES = {
+    "CANDIDATE_SCOPE_REQUIRES_REVIEW", "CANDIDATE_SIZE_LIMIT", "CANDIDATE_CHANGED",
+    "CANDIDATE_BINARY_REFUSED", "CANDIDATE_HEAD_OR_BRANCH_CHANGED", "CANDIDATE_CHANGE_COUNT",
+    "CANDIDATE_FILE_MODE_REFUSED", "CANDIDATE_LINK_REFUSED", "SECRET_CONTENT", "EVENT_FORMAT",
+    "EXECUTION_BUDGET_EXHAUSTED", "REPOSITORY_FILTER_REQUIRES_REVIEW", "WORKER_UNAVAILABLE",
+    "PROCESS_CONFIRMATION_REQUIRED", "WORKER_PROCESS_STILL_RUNNING", "RUNNING_WORKER_REQUIRED",
+    "OBSERVED_CRASH_BUDGET_REQUIRED", "EXECUTION_CHECKPOINT_INVALID", "WORKER_RECEIPT_REFUSED",
+    "RUNNING_OR_UNCERTAIN_WORKER_REQUIRES_RECONCILIATION", "RESUME_WORKTREE_CONTEXT_CHANGED",
+}
 
 
 def git(source: Path, arguments: list[str], *, timeout: int = 30) -> str:
     env = worker_environment()
     env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-                "GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "", "GIT_OPTIONAL_LOCKS": "0"})
-    result = subprocess.run(["git", "-c", "core.fsmonitor=false", *arguments], cwd=source,
+                "GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "", "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1",
+                "GIT_ATTR_NOSYSTEM": "1", "GIT_ALLOW_PROTOCOL": "", "GIT_PROTOCOL_FROM_USER": "0"})
+    result = subprocess.run(["git", "--no-pager", "--no-replace-objects",
+                            "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.devnull,
+                            "-c", "core.attributesFile=" + os.devnull, "-c", "submodule.recurse=false",
+                            "-c", "gc.auto=0", "-c", "maintenance.auto=false", *arguments], cwd=source,
                             env=env, capture_output=True, text=True, timeout=timeout, check=False)
     if result.returncode:
         raise ValueError("GIT_OPERATION_FAILED")
@@ -37,6 +50,9 @@ def ensure_repository(source: Path) -> Path:
     source = source.resolve(strict=True)
     if not source.is_dir() or not (source / ".git").exists():
         raise ValueError("SSTC_REPOSITORY_REQUIRED")
+    if any(name.startswith("filter.") for name in
+           git(source, ["config", "--includes", "--list", "--name-only"]).splitlines()):
+        raise ValueError("REPOSITORY_FILTER_REQUIRES_REVIEW")
     return source
 
 
@@ -83,12 +99,19 @@ def codex_command(executable: str, session_id: str) -> list[str]:
 
 
 def invoke(executable: str, session_id: str, prompt: bytes, cwd: Path, *,
-           timeout: float = TIMEOUT, on_tick=None, on_write=None) -> tuple[int, bytes, str | None]:
+           timeout: float = TIMEOUT, on_tick=None, on_write=None, on_start=None) -> tuple[int, bytes, str | None]:
     command = codex_command(executable, session_id)
     output = bytearray()
     fault: list[str] = []
     with subprocess.Popen(command, cwd=cwd, env=write_environment(), stdin=subprocess.PIPE,
                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
+        try:
+            if on_start:
+                on_start(process.pid)
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
         def send() -> None:
             try:
                 process.stdin.write(prompt)
@@ -105,7 +128,9 @@ def invoke(executable: str, session_id: str, prompt: bytes, cwd: Path, *,
                     if len(line) > 1_048_576 or len(output) + len(line) > MAX_EVENTS:
                         raise ValueError("EVENT_LIMIT")
                     output.extend(line)
-                    event = json.loads(line)
+                    event = decode_document(line)
+                    if not isinstance(event, dict):
+                        raise ValueError("EVENT_FORMAT")
                     if on_write and event.get("type") == "item.completed":
                         item = event.get("item", {})
                         if item.get("type") == "file_change":
@@ -114,14 +139,15 @@ def invoke(executable: str, session_id: str, prompt: bytes, cwd: Path, *,
                             # A shell command may write through python/sed/etc.; count
                             # every shell step conservatively rather than guess intent.
                             on_write(1)
-            except Exception:
-                fault.append("EVENT_STREAM")
-                process.kill()
+            except (ValueError, KeyError, TypeError, AttributeError, OSError):
+                fault.append("EVENT_FORMAT")
+                if process.poll() is None:
+                    process.kill()
 
         writer = threading.Thread(target=send, daemon=True)
         reader = threading.Thread(target=receive, daemon=True)
-        writer.start(); reader.start()
         try:
+            writer.start(); reader.start()
             deadline = time.monotonic() + timeout
             while process.poll() is None:
                 if on_tick:
@@ -139,6 +165,11 @@ def invoke(executable: str, session_id: str, prompt: bytes, cwd: Path, *,
             fault.append("INTERRUPTED"); process.kill(); process.wait()
         except ValueError:
             fault.append("EXECUTION_BUDGET_EXHAUSTED"); process.kill(); process.wait()
+        except BaseException:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            raise
         reader.join(timeout=5); writer.join(timeout=5)
         if reader.is_alive() or writer.is_alive():
             fault.append("PIPE_TIMEOUT")
@@ -152,7 +183,9 @@ def validate_events(raw: bytes, expected_session: str | None = None) -> str | No
     limited = False
     sessions = []
     for line in raw.splitlines():
-        event = json.loads(line)
+        event = decode_document(line)
+        if not isinstance(event, dict):
+            raise ValueError("EVENT_FORMAT")
         kind = event.get("type")
         if kind == "thread.started":
             sessions.append(event.get("thread_id"))
@@ -172,12 +205,82 @@ def validate_events(raw: bytes, expected_session: str | None = None) -> str | No
     return None
 
 
+def resume_snapshot(worktree: Path, revision: str, branch: str) -> list[dict]:
+    from sstc_candidate import candidate_snapshot
+    try:
+        return candidate_snapshot(worktree, revision, branch)
+    except ValueError as error:
+        if (str(error) != "CANDIDATE_CHANGE_COUNT" or
+                git(worktree, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", revision]) or
+                git(worktree, ["ls-files", "--others", "--exclude-standard"])):
+            raise
+        return []
+
+
+def reconcile_interrupted(task_file: Path, input_directory: Path, *,
+                          active_seconds: float | None = None, write_steps: int | None = None,
+                          abort: bool = False, worktree: Path | None = None,
+                          branch: str | None = None) -> str:
+    """Reconcile a stopped process once; never invoke Codex or issue new authority."""
+    path = task_file.absolute()
+    with task_lock(path):
+        ctx = execution_context(path, input_directory)
+        state, log = ctx["state"], ctx["log"]
+        worker = log.get("codex_worker", {})
+        if state["status"] != "IMPLEMENTING" or worker.get("outcome") != "RUNNING":
+            raise ValueError("RUNNING_WORKER_REQUIRED")
+        if (worker.get("session_id") != ctx["session_id"] or
+                worker.get("source_revision") != ctx["proof"]["source_revision"] or
+                worker.get("authority_sha256") != digest(ctx["proof"]) or
+                worktree is not None and str(worktree.absolute()) != worker.get("worktree") or
+                branch is not None and branch != worker.get("branch")):
+            raise ValueError("RESUME_WORKTREE_CONTEXT_CHANGED")
+        commands = log.get("commands", [])
+        entry = commands[-1] if isinstance(commands, list) and commands else {}
+        command = entry.get("command")
+        if (entry.get("name") != "codex-sstc-worker" or entry.get("started_at") != worker.get("started_at") or
+                not isinstance(command, list) or not command or
+                command != codex_command(command[0], ctx["session_id"])):
+            raise ValueError("WORKER_RECEIPT_REFUSED")
+        pid = worker.get("process_pid")
+        if pid is not None and not process_stopped(pid):
+            raise ValueError("WORKER_PROCESS_STILL_RUNNING")
+        if not abort:
+            if pid is None:
+                raise ValueError("PROCESS_CONFIRMATION_REQUIRED")
+            target = Path(worker["worktree"])
+            files = resume_snapshot(target, worker["source_revision"], worker["branch"])
+            diff = hashlib.sha256(git(target, ["diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"]).encode()).hexdigest()
+            reconcile_budget(path, active_seconds, write_steps)
+            worker.update(outcome="INTERRUPTED", diff_sha256=diff, resume_files=files)
+            reason = "STOPPED_PROCESS_RECONCILED"
+        else:
+            reason = "UNCERTAIN_WORKER_ABORTED"
+            worker["outcome"] = reason
+            transition(state, log, "IMPLEMENTATION_FAILED", reason)
+        worker["reconciled_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+        log["commands"][-1].update(finished_at=worker["reconciled_at"], exit_code=None)
+        log["stop_reason"] = reason
+        state["checkpoint_path"] = f"state/checkpoints/{path.stem}.json"
+        save_pair(path, state, log, checkpoint_status="IMPLEMENTING")
+        if not abort:
+            budget = load_document(companion(path, "execution"))
+            if budget["active_seconds"] >= 1800 or budget["write_steps"] > 20:
+                stop_budget(path, "EXECUTION_BUDGET_EXHAUSTED")
+                return "IMPLEMENTATION_FAILED"
+        return state["status"]
+
+
 def validation(source: Path, *, timeout: float = TIMEOUT) -> tuple[int, str]:
     wrapper = source / "gradlew"
-    if wrapper.is_file():
-        wrapper.chmod(wrapper.stat().st_mode | 0o111)
-    result = subprocess.run(VALIDATION, cwd=source, env=write_environment(),
-                            capture_output=True, text=True, timeout=timeout, check=False)
+    regular(wrapper)
+    original_mode = wrapper.stat().st_mode
+    try:
+        wrapper.chmod(original_mode | 0o111)
+        result = subprocess.run(VALIDATION, cwd=source, env=write_environment(),
+                                capture_output=True, text=True, timeout=timeout, check=False)
+    finally:
+        wrapper.chmod(original_mode)
     # stdout/stderr can contain credentials from build tooling; retain only a receipt.
     return result.returncode, "./gradlew testDebugUnitTest assembleDebug"
 
@@ -232,35 +335,27 @@ def run(task_file: Path, sstc_repository: Path, worktree: Path, branch: str,
             save_pair(path, state, log)
         if state["status"] != "IMPLEMENTING":
             raise ValueError("IMPLEMENTING_REQUIRED")
-        source = ensure_repository(sstc_repository)
         ctx = execution_context(path, input_directory)
         session, input_revision = ctx["session_id"], ctx["proof"]["source_revision"]
         if (not isinstance(input_revision, str) or not re.fullmatch(r"[0-9a-f]{40}", input_revision) or
                 ctx["record"].get("sstc_revision", input_revision) != input_revision):
             raise ValueError("PINNED_REVISION_REQUIRED")
+        source = ensure_repository(sstc_repository)
         plan = validation_plan(source, input_revision, [item["path"] for item in ctx["manifest"]["evidence"]
                                if item["kind"] == "target_instructions" and not item["missing"]])
         prior = log.get("codex_worker")
         if prior:
             if not resume or prior.get("outcome") in {"IMPLEMENTED", "VALIDATED"}:
                 raise ValueError("EXPLICIT_RESUME_REQUIRED")
-            if prior.get("outcome") not in {"CODEX_FAILED", "TIMEOUT", "INTERRUPTED", "RATE_LIMIT", "WORKER_FAILED"}:
+            if prior.get("outcome") not in {"CODEX_FAILED", "TIMEOUT", "INTERRUPTED", "RATE_LIMIT", "WORKER_FAILED", "WORKER_UNAVAILABLE"}:
                 raise ValueError("RUNNING_OR_UNCERTAIN_WORKER_REQUIRES_RECONCILIATION")
             if any(prior.get(key) != value for key, value in
                    {"session_id": session, "source_revision": input_revision,
                     "branch": branch, "worktree": str(worktree.absolute())}.items()):
                 raise ValueError("RESUME_WORKTREE_CONTEXT_CHANGED")
-            from sstc_candidate import candidate_snapshot
             # The source commit/branch and every dirty path must remain within scope.
-            try:
-                current_files = candidate_snapshot(worktree.absolute(), input_revision, branch)
-            except ValueError as error:
-                if (str(error) != "CANDIDATE_CHANGE_COUNT" or
-                        git(worktree, ["diff", "--name-only", input_revision]) or
-                        git(worktree, ["ls-files", "--others", "--exclude-standard"])):
-                    raise
-                current_files = []
-            current_diff = hashlib.sha256(git(source, ["-C", str(worktree), "diff", "--binary", "HEAD"]).encode()).hexdigest()
+            current_files = resume_snapshot(worktree.absolute(), input_revision, branch)
+            current_diff = hashlib.sha256(git(source, ["-C", str(worktree), "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"]).encode()).hexdigest()
             if (prior.get("diff_sha256") is not None and prior["diff_sha256"] != current_diff or
                     "resume_files" in prior and prior["resume_files"] != current_files):
                 raise ValueError("RESUME_DIFF_CHANGED")
@@ -298,8 +393,10 @@ def run(task_file: Path, sstc_repository: Path, worktree: Path, branch: str,
             except (OSError, ValueError, subprocess.TimeoutExpired):
                 worker["outcome"] = "WORKTREE_CREATION_FAILED"
                 log["commands"][-1]["finished_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
-                save_pair(path, state, log)
                 budget.finish("WORKTREE_CREATION_FAILED")
+                transition(state, log, "IMPLEMENTATION_FAILED", "WORKTREE_CREATION_FAILED")
+                state["checkpoint_path"] = f"state/checkpoints/{path.stem}.json"
+                save_pair(path, state, log, checkpoint_status="IMPLEMENTING")
                 raise
         validation_instruction = (
             "Do not commit the changes. After the smallest change, do not run local Android build, test, or lint commands. "
@@ -319,45 +416,73 @@ def run(task_file: Path, sstc_repository: Path, worktree: Path, branch: str,
                   f"At most {20 - budget.value['write_steps']} remaining file-write steps. "
                   "If the approved scope is ambiguous, stop and report uncertainty.\n" +
                   json.dumps({"analysis": ctx["result"], "target_guidance": plan["documents"]})).encode()
+        def on_start(pid):
+            worker["process_pid"] = pid
+            save_pair(path, state, log)
+
+        invocation_finished, local_validation_started = False, False
         try:
             code, raw, fault = invoke(executable, session, prompt, worktree.absolute(),
-                                     timeout=budget.remaining, on_tick=budget.tick, on_write=budget.tick)
+                                     timeout=budget.remaining, on_tick=budget.tick, on_write=budget.tick,
+                                     on_start=on_start)
+            invocation_finished = True
             outcome = fault or validate_events(raw, session) or ("CODEX_FAILED" if code else None)
             if outcome is None:
-                if validation_mode == "github":
-                    from sstc_candidate import candidate_snapshot
-                    worker["candidate_files"] = candidate_snapshot(worktree.absolute(), input_revision, branch)
-                    outcome = "IMPLEMENTED"
-                else:
+                from sstc_candidate import candidate_snapshot
+                worker["candidate_files"] = candidate_snapshot(worktree.absolute(), input_revision, branch)
+                if validation_mode == "local":
+                    local_validation_started = True
+                    budget.tick(writes=1)
                     result_code, command_text = validation(worktree.absolute(), timeout=budget.remaining)
                     worker["validation"] = {"command": command_text, "exit_code": result_code}
-                    outcome = "VALIDATED" if result_code == 0 else "BUILD_FAILED"
+                    outcome = "IMPLEMENTED" if result_code == 0 else "BUILD_FAILED"
+                else:
+                    outcome = "IMPLEMENTED"
             budget.finish(outcome)
             if budget.value["active_seconds"] >= 1800 or budget.value["write_steps"] > 20:
                 outcome = "EXECUTION_BUDGET_EXHAUSTED"
             log["commands"][-1]["exit_code"] = code
             log["commands"][-1]["finished_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
             worker["outcome"] = outcome
-            worker["diff_sha256"] = hashlib.sha256(git(source, ["-C", str(worktree), "diff", "--binary", "HEAD"]).encode()).hexdigest()
+            worker["diff_sha256"] = hashlib.sha256(git(source, ["-C", str(worktree), "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"]).encode()).hexdigest()
             if outcome not in {"SESSION_MISMATCH", "EXECUTION_BUDGET_EXHAUSTED"}:
-                from sstc_candidate import candidate_snapshot
-                try:
-                    worker["resume_files"] = (worker["candidate_files"] if "candidate_files" in worker else
-                                              candidate_snapshot(worktree.absolute(), input_revision, branch))
-                except ValueError as error:
-                    if (str(error) != "CANDIDATE_CHANGE_COUNT" or
-                            git(worktree, ["diff", "--name-only", input_revision]) or
-                            git(worktree, ["ls-files", "--others", "--exclude-standard"])):
-                        raise
-                    worker["resume_files"] = []
+                worker["resume_files"] = (worker["candidate_files"] if "candidate_files" in worker else
+                                          resume_snapshot(worktree.absolute(), input_revision, branch))
             if outcome == "RATE_LIMIT":
                 defer(path, state, log)
-            elif outcome in {"SESSION_MISMATCH", "EXECUTION_BUDGET_EXHAUSTED"}:
+                return outcome
+            if outcome == "BUILD_FAILED":
+                transition(state, log, "VALIDATING", "Local deterministic validation completed")
+                transition(state, log, "BUILD_FAILED", outcome)
+            elif outcome not in {"IMPLEMENTED", "TIMEOUT", "INTERRUPTED", "CODEX_FAILED"}:
                 transition(state, log, "IMPLEMENTATION_FAILED", outcome)
-            save_pair(path, state, log)
+            checkpoint = outcome != "IMPLEMENTED"
+            if checkpoint:
+                state["checkpoint_path"] = f"state/checkpoints/{path.stem}.json"
+            save_pair(path, state, log, checkpoint_status="IMPLEMENTING" if checkpoint else None)
             return outcome
-        except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired):
-            worker["outcome"] = "WORKER_FAILED"
-            save_pair(path, state, log)
-            budget.finish("WORKER_FAILED")
+        except KeyboardInterrupt:
+            worker["outcome"] = "RUNNING"
+            state["checkpoint_path"] = f"state/checkpoints/{path.stem}.json"
+            save_pair(path, state, log, checkpoint_status="IMPLEMENTING")
+            budget.finish("INTERRUPTED")
+            raise
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired) as error:
+            reason = str(error) if isinstance(error, ValueError) and str(error) in SAFE_FAILURES else "WORKER_FAILED"
+            if isinstance(error, OSError) and not invocation_finished and "process_pid" not in worker:
+                reason = "WORKER_UNAVAILABLE"
+                budget.value["attempts"] -= 1
+                worker["resume_files"] = resume_snapshot(worktree.absolute(), input_revision, branch)
+                worker["diff_sha256"] = hashlib.sha256(git(worktree, ["diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"]).encode()).hexdigest()
+            elif local_validation_started and isinstance(error, (OSError, subprocess.TimeoutExpired)):
+                reason = "BUILD_FAILED"
+                transition(state, log, "VALIDATING", "Local deterministic validation attempted")
+                transition(state, log, "BUILD_FAILED", "LOCAL_VALIDATION_UNAVAILABLE_OR_TIMEOUT")
+            else:
+                transition(state, log, "IMPLEMENTATION_FAILED", reason)
+            worker["outcome"] = reason
+            log["commands"][-1]["finished_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+            state["checkpoint_path"] = f"state/checkpoints/{path.stem}.json"
+            save_pair(path, state, log, checkpoint_status="IMPLEMENTING")
+            budget.finish(reason)
             raise

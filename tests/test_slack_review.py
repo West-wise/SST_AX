@@ -56,12 +56,42 @@ class ApprovalReviewTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             approval.approval_review(fixture.path, self.request)
 
+    def test_analysis_risk_is_never_hidden_by_lower_initial_task_risk(self):
+        fixture = codex_tests.CodexImpactTest("test_analysis_validates_and_preserves_authority")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        inputs = fixture.path.parent / (fixture.path.stem + ".inputs")
+        shutil.move(fixture.inputs, inputs)
+        fixture.inputs = inputs
+        state, log = fixture.pair()
+        state["risk_level"] = "MEDIUM"
+        storage.save_pair(fixture.path, state, log)
+        fixture.result["risk_level"] = "HIGH"
+        fixture.result["approval_reasons"].append("HIGH_RISK")
+        self.assertEqual(fixture.execute(), "VALID")
+        fixture.move("WAITING_APPROVAL", "--reason", "UI_CHANGE")
+        request = approval.prepare_request(fixture.path, "T1", "C1", "A1")
+        review = approval.approval_review(fixture.path, request)
+        self.assertEqual(review["risk_level"], "HIGH")
+        self.assertEqual(storage.load_json(fixture.path)["risk_level"], "MEDIUM")
+
     def test_changed_snapshot_cannot_render_an_old_request(self):
         state, log = self.fixture.pair()
         log["commands"].append({"name": "scope changed"})
         storage.save_pair(self.fixture.path, state, log)
         with self.assertRaises(ValueError):
             approval.approval_review(self.fixture.path, self.request)
+
+    def test_legacy_secret_bearing_approval_reason_cannot_enter_slack_review(self):
+        state, log = self.fixture.pair()
+        state["approval_reason"] = "xapp-1-A123456-T123456-abcdefghijklmnopqrstuvwxyz012345"
+        storage.save_pair(self.fixture.path, state, log)
+        checkpoint = storage.load_json(storage.checkpoint_path(self.fixture.path))
+        checkpoint.update(state=state, log=log)
+        storage.atomic_json(storage.checkpoint_path(self.fixture.path), checkpoint)
+        request = approval.prepare_request(self.fixture.path, "T1", "C1", "A1")
+        with self.assertRaisesRegex(ValueError, "SECRET_CONTENT"):
+            approval.approval_review(self.fixture.path, request)
 
     def test_long_untrusted_text_is_bounded_and_does_not_enter_notification(self):
         review = approval.approval_review(self.fixture.path, self.request)

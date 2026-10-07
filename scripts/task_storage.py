@@ -15,6 +15,38 @@ def companion(path: Path, suffix: str) -> Path:
     return path.with_name(f"{path.stem}.{suffix}.json")
 
 
+def process_stopped(pid: int) -> bool:
+    """Confirm a recorded worker PID exited; an uncertain check never permits retry."""
+    if type(pid) is not int or pid <= 0:
+        raise ValueError("PROCESS_CONFIRMATION_REQUIRED")
+    if os.name == "nt":
+        import ctypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        kernel.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        kernel.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            if ctypes.get_last_error() == 87:  # ERROR_INVALID_PARAMETER: PID absent
+                return True
+            raise ValueError("PROCESS_CONFIRMATION_REQUIRED")
+        try:
+            code = ctypes.c_ulong()
+            if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+                raise ValueError("PROCESS_CONFIRMATION_REQUIRED")
+            return code.value != 259  # STILL_ACTIVE
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        raise ValueError("PROCESS_CONFIRMATION_REQUIRED") from None
+    return False
+
+
 def atomic_json(path: Path, value: dict) -> None:
     """Replace one file after flushing its complete contents."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,13 +104,39 @@ def validate_pair(path: Path, state: dict, log: dict) -> None:
         raise ValueError("Transition history does not match task")
 
 
-def save_pair(path: Path, state: dict, log: dict) -> None:
-    """Journal the intended pair before replacing either file. Caller holds lock."""
+def _write_bundle(path: Path, bundle: dict) -> None:
+    state, log = bundle["state"], bundle["log"]
     validate_pair(path, state, log)
-    pending = companion(path, "pending")
-    atomic_json(pending, {"state": state, "log": log})
+    resume = bundle.get("checkpoint_status")
+    if resume is not None and resume not in {"ANALYZING", "IMPLEMENTING", "WAITING_APPROVAL"}:
+        raise ValueError("Invalid checkpoint resume status")
+    if type(bundle.get("codex_checkpoint", False)) is not bool:
+        raise ValueError("Invalid Codex checkpoint flag")
     atomic_json(path, state)
     atomic_json(companion(path, "log"), log)
+    if resume is not None:
+        atomic_json(checkpoint_path(path), {"state": state, "log": log, "resume_status": resume})
+    if bundle.get("codex_checkpoint"):
+        atomic_json(companion(path, "codex-checkpoint"), {
+            "state": state, "log": log, "resume_status": state["status"]})
+
+
+def save_pair(path: Path, state: dict, log: dict, *, checkpoint_status: str | None = None,
+              codex_checkpoint: bool = False) -> None:
+    """Journal pair and optional fixed-path checkpoints before replacing any file."""
+    validate_pair(path, state, log)
+    pending = companion(path, "pending")
+    bundle = {"state": state, "log": log}
+    if checkpoint_status is not None:
+        if checkpoint_status not in {"ANALYZING", "IMPLEMENTING", "WAITING_APPROVAL"}:
+            raise ValueError("Invalid checkpoint resume status")
+        bundle["checkpoint_status"] = checkpoint_status
+    if type(codex_checkpoint) is not bool:
+        raise ValueError("Invalid Codex checkpoint flag")
+    if codex_checkpoint:
+        bundle["codex_checkpoint"] = True
+    atomic_json(pending, bundle)
+    _write_bundle(path, bundle)
     pending.unlink()
 
 
@@ -89,9 +147,7 @@ def recover_pair(path: Path) -> None:
         validate_pair(path, load_json(path), load_json(companion(path, "log")))
         return
     bundle = load_json(pending)
-    validate_pair(path, bundle["state"], bundle["log"])
-    atomic_json(path, bundle["state"])
-    atomic_json(companion(path, "log"), bundle["log"])
+    _write_bundle(path, bundle)
     pending.unlink()
 
 
