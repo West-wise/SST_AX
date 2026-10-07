@@ -45,7 +45,7 @@ python -B scripts/run_codex_impact.py --task-file "$TASK_FILE" --input-directory
   --observed-write-steps "$OBSERVED_WRITE_STEPS"
 ```
 
-관측값은 이전 기록보다 작을 수 없습니다. PID가 없는 옛 RUNNING 기록이나 종료를 확인할 수 없는 작업은 자동 재개하지 않습니다. 증거를 보존한 채 `--abort-interrupted`로 ANALYSIS_FAILED를 기록하고 새 Task를 판단합니다. 실행 중인 프로세스는 이 명령으로 중단하지 않습니다.
+관측값은 이전 기록보다 작을 수 없습니다. 기록된 PID가 살아 있거나 확인에 실패하면 복구·실패 종결을 거부하며 운영자가 먼저 실제 프로세스를 중단해야 합니다. PID가 없는 옛 RUNNING 기록은 자동 재개하지 않습니다. 추가 실행을 허용하지 않는 `--abort-interrupted`로 증거를 보존한 채 ANALYSIS_FAILED를 기록하고 새 Task를 판단합니다. 이 명령은 OS 프로세스를 종료하지 않습니다.
 
 비 JSON stdout은 공식 JSONL 계약 위반으로 거부합니다. Codex 0.153.2 공식 소스의 최상위 `error`는 치명 오류이고 `item.type=error`는 비치명 알림이므로, 후자 뒤 정상 완료는 허용합니다. 원시 메시지는 저장하지 않고 고정 오류 코드만 남깁니다. 프록시·CA의 신뢰된 시스템 환경은 전달하되 Slack/GitHub 인증 환경은 제외합니다. 상위 디렉터리의 symlink/reparse point 거부는 유지하므로 입력·결과 저장 경로는 실제 디렉터리를 사용해야 합니다.
 

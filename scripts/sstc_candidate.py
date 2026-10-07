@@ -17,10 +17,13 @@ SHA = re.compile(r"[0-9a-f]{40}")
 def git(path: Path, args: list[str], *, raw: bytes | None = None, index: str | None = None) -> bytes:
     env = worker_environment()
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
-               GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
+               GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", GIT_NO_REPLACE_OBJECTS="1",
+               GIT_NO_LAZY_FETCH="1", GIT_ALLOW_PROTOCOL="", GIT_PROTOCOL_FROM_USER="0")
     if index is not None:
         env["GIT_INDEX_FILE"] = index
-    result = subprocess.run(["git", "-c", "core.fsmonitor=false", *args], cwd=path,
+    if args and args[0] in {"diff", "show", "log"}:
+        args = [args[0], "--no-ext-diff", "--no-textconv", *args[1:]]
+    result = subprocess.run(["git", "--no-replace-objects", "-c", "core.fsmonitor=false", *args], cwd=path,
                             env=env, input=raw, capture_output=True, timeout=30, check=False)
     if result.returncode:
         raise ValueError("CANDIDATE_GIT_FAILED")

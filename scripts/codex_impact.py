@@ -60,7 +60,7 @@ def regular(path: Path) -> None:
 
 
 def bundle(task: dict, directory: Path) -> tuple[dict, dict]:
-    """Recompute hashes from bounded evidence, never follow manifest paths."""
+    """Read bounded evidence by validated ID; never dereference evidence.path."""
     regular(directory / "manifest.json")
     manifest = load_document(directory / "manifest.json")
     schema = load_document(SCHEMA_PATH)
@@ -273,6 +273,9 @@ def approved_session(path: Path, state: dict, log: dict, manifest: dict,
     """Match the exact Gateway-produced transition against its approval snapshot."""
     if state["status"] != "IMPLEMENTING" or state["risk_level"] == "CRITICAL":
         raise ValueError("APPROVAL_REQUIRED")
+    approvals = log.get("approvals")
+    if not isinstance(approvals, list) or not approvals or not isinstance(approvals[-1], dict):
+        raise ValueError("APPROVAL_REQUIRED")
     cp = checkpoint if checkpoint is not None else load_document(checkpoint_path(path))
     before, prior = cp["state"], cp["log"]
     validate_pair(path, before, prior)
@@ -282,9 +285,6 @@ def approved_session(path: Path, state: dict, log: dict, manifest: dict,
         raise ValueError("APPROVAL_CHECKPOINT")
     if before["status"] != "WAITING_APPROVAL":
         raise ValueError("APPROVAL_CHECKPOINT")
-    approvals = log.get("approvals")
-    if not isinstance(approvals, list) or not approvals or not isinstance(approvals[-1], dict):
-        raise ValueError("APPROVAL_REQUIRED")
     audit = approvals[-1]
     request = request if request is not None else load_document(companion(path, "slack-request"))
     snapshot = digest({"state": before, "log": prior, "checkpoint": cp})
@@ -336,6 +336,8 @@ def reconcile_interrupted(task_file: Path, inputs: Path, *, abort=False,
         if state["status"] != "ANALYZING" or record.get("outcome") != "RUNNING":
             raise ValueError("RUNNING_ANALYSIS_REQUIRED")
         if abort:
+            if "process_id" in record and not process_stopped(record["process_id"]):
+                raise ValueError("PROCESS_STILL_RUNNING")
             stop_budget(path, "ANALYSIS_RECONCILIATION_ABORTED")
             return "ANALYSIS_FAILED"
         manifest, _ = bundle(state, inputs.absolute())

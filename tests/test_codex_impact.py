@@ -156,6 +156,14 @@ class CodexImpactTest(unittest.TestCase):
         for file in self.path.parent.glob("*.json"):
             self.assertNotIn(result["summary"], file.read_text(encoding="utf-8"))
 
+    def test_slack_app_token_result_never_persisted(self):
+        result = copy.deepcopy(self.result)
+        result["summary"] = "xapp-1-" + "A" * 30
+        self.assertEqual(self.execute(result=result), "SECRET_CONTENT")
+        self.assertIsNone(self.pair()[1]["codex_analysis"]["result_file"])
+        for file in self.path.parent.glob("*.json"):
+            self.assertNotIn(result["summary"], file.read_text(encoding="utf-8"))
+
     def test_approved_session_uses_exact_validated_read_only_analysis(self):
         self.execute()
         self.assertEqual(self.approve(), "IMPLEMENTING")
@@ -501,6 +509,8 @@ class CodexImpactTest(unittest.TestCase):
         before = self.pair()
         with self.assertRaisesRegex(ValueError, "PROCESS_STILL_RUNNING"):
             worker.reconcile_interrupted(self.path, self.inputs, active_seconds=30, write_steps=0)
+        with self.assertRaisesRegex(ValueError, "PROCESS_STILL_RUNNING"):
+            worker.reconcile_interrupted(self.path, self.inputs, abort=True)
         self.assertEqual(self.pair(), before)
         with self.assertRaisesRegex(ValueError, "INTERRUPTED_RUN_REQUIRES_RECONCILIATION"):
             self.execute()
