@@ -14,6 +14,7 @@ from sstc_candidate import candidate_snapshot, git, tree_payload
 from sstc_worker import BRANCH, codex_command
 from task_storage import atomic_json, companion, save_pair, task_lock, validate_pair
 from update_task_state import utc_now
+from execution_policy import BudgetClient, execution_context
 
 PREFIX = "repos/" + REPOSITORY
 
@@ -41,9 +42,9 @@ def context(path: Path, record: dict) -> tuple[dict, dict, dict]:
     state, log = pair(path)
     require(record["task_id"] == path.stem and record["repository"] == REPOSITORY and
             snapshot(path) == record["task_snapshot"], "PIPELINE_CONTEXT_CHANGED")
-    manifest, _ = bundle(state, Path(record["input_directory"]))
-    authorized = record["approved_pair"]
-    session = approved_session(path, authorized["state"], authorized["log"], manifest)
+    ctx = execution_context(path, Path(record["input_directory"]))
+    manifest, session = ctx["manifest"], ctx["session_id"]
+    require(__import__("codex_impact").digest(ctx["proof"]) == record["authority_sha256"], "EXECUTION_AUTHORITY_CHANGED")
     require(session == record["session_id"], "PIPELINE_SESSION_CHANGED")
     worktree = Path(record["worktree"])
     require(candidate_snapshot(worktree, record["source_revision"], record["branch"]) ==
@@ -81,7 +82,8 @@ def verify_ref(client, record: dict) -> None:
 
 
 def publish(task_file: Path, input_directory: Path, client=None) -> dict:
-    path, client = task_file.absolute(), client or GitHub()
+    path = task_file.absolute()
+    client = BudgetClient(client or GitHub(), path)
     with task_lock(path):
         state, log = pair(path)
         require(state["status"] == "IMPLEMENTING", "IMPLEMENTING_REQUIRED")
@@ -90,11 +92,9 @@ def publish(task_file: Path, input_directory: Path, client=None) -> dict:
         worker = log.get("codex_worker", {})
         require(worker.get("outcome") == "IMPLEMENTED" and worker.get("validation_mode") == "github",
                 "REMOTE_IMPLEMENTATION_REQUIRED")
-        before = copy.deepcopy(log)
-        before.pop("codex_worker")
-        entry = before["commands"].pop()
-        manifest, _ = bundle(state, input_directory.absolute())
-        session = approved_session(path, state, before, manifest)
+        ctx = execution_context(path, input_directory.absolute())
+        entry = log["commands"][-1]
+        manifest, session = ctx["manifest"], ctx["session_id"]
         require(entry.get("name") == "codex-sstc-worker" and type(entry.get("exit_code")) is int and
                 entry["exit_code"] == 0 and entry.get("finished_at") and
                 entry.get("started_at") == worker.get("started_at") and
@@ -117,7 +117,8 @@ def publish(task_file: Path, input_directory: Path, client=None) -> dict:
                   "input_directory": str(input_directory.absolute()), "session_id": session,
                   "worktree": str(worktree), "branch": branch, "source_revision": revision,
                   "candidate_files": files, "tree_sha": expected_tree, "candidate_sha": None,
-                  "approved_pair": {"state": copy.deepcopy(state), "log": before},
+                  "authority_sha256": __import__("codex_impact").digest(ctx["proof"]),
+                  "analysis_record": copy.deepcopy(ctx["record"]),
                   "task_snapshot": snapshot(path), "outcome": "PUBLISH_UNCERTAIN"}
         tree = post(path, record, client, PREFIX + "/git/trees",
                     {"base_tree": base_tree, "tree": entries}, "PUBLISH_UNCERTAIN")
@@ -152,7 +153,7 @@ def publish(task_file: Path, input_directory: Path, client=None) -> dict:
 
 
 def pr_payload(path: Path, record: dict) -> dict:
-    approved = record["approved_pair"]["log"]["codex_analysis"]
+    approved = record["analysis_record"]
     result = load_document(path.parent / approved["result_file"])
     regular(path.parent / approved["result_file"])
     summary = result["summary"]
@@ -185,7 +186,8 @@ def verify_pr(response: dict, record: dict, payload: dict) -> None:
 
 
 def check(task_file: Path, client=None) -> dict:
-    path, client = task_file.absolute(), client or GitHub()
+    path = task_file.absolute()
+    client = BudgetClient(client or GitHub(), path)
     with task_lock(path):
         record = load_document(record_path(path))
         if record["outcome"] in {"READY_FOR_REVIEW", "BUILD_FAILED"}:

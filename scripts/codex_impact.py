@@ -10,6 +10,7 @@ import re
 import subprocess
 import tempfile
 import threading
+import time
 
 from impact_collection import MAX_EVIDENCE_BYTES, MAX_TOTAL_BYTES, check_content
 from impact_validation import SCHEMA_PATH, decode_document, load_document, validate_impact, validate_shape
@@ -115,17 +116,23 @@ def worker_environment() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key.upper() in allowed}
 
 
-def preflight(executable: str, cwd: Path) -> None:
+def preflight(executable: str, cwd: Path, *, timeout: float = 30) -> None:
     """Unsupported isolation flags must stop before sending any evidence."""
+    deadline = time.monotonic() + timeout
     for suffix in ([], ["resume"]):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(executable, timeout)
         result = subprocess.run([executable, "exec", *suffix, "--help"], cwd=cwd,
-                                env=worker_environment(), capture_output=True, timeout=15, check=False)
+                                env=worker_environment(), capture_output=True,
+                                timeout=min(15, remaining), check=False)
         if result.returncode or any(flag not in result.stdout for flag in (
                 b"--ignore-user-config", b"--ignore-rules", b"--output-schema", b"--json")):
             raise ValueError("CODEX_VERSION_UNSUPPORTED")
 
 
-def invoke(args: list[str], prompt: bytes, cwd: Path, on_session) -> tuple[int, bytes, str | None]:
+def invoke(args: list[str], prompt: bytes, cwd: Path, on_session, *,
+           timeout: float | None = None, on_tick=None) -> tuple[int, bytes, str | None]:
     """Bound event output and duration; discard stderr rather than persist secrets."""
     output = bytearray()
     fault = []
@@ -159,13 +166,27 @@ def invoke(args: list[str], prompt: bytes, cwd: Path, on_session) -> tuple[int, 
         writer.start()
         reader.start()
         try:
-            process.wait(timeout=TIMEOUT)
+            deadline = time.monotonic() + (TIMEOUT if timeout is None else timeout)
+            while process.poll() is None:
+                if on_tick:
+                    on_tick()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(args, timeout)
+                try:
+                    process.wait(timeout=min(1, remaining))
+                except subprocess.TimeoutExpired:
+                    pass
         except subprocess.TimeoutExpired:
             fault.append("TIMEOUT")
             process.kill()
             process.wait()
         except KeyboardInterrupt:
             fault.append("INTERRUPTED")
+            process.kill()
+            process.wait()
+        except ValueError:
+            fault.append("EXECUTION_BUDGET_EXHAUSTED")
             process.kill()
             process.wait()
         reader.join(timeout=5)
@@ -204,18 +225,22 @@ def parse_events(raw: bytes) -> tuple[str | None, str | None]:
     return final, None
 
 
-def approved_session(path: Path, state: dict, log: dict, manifest: dict) -> str:
+def approved_session(path: Path, state: dict, log: dict, manifest: dict,
+                     checkpoint: dict | None = None, request: dict | None = None) -> str:
     """Match the exact Gateway-produced transition against its approval snapshot."""
     if state["status"] != "IMPLEMENTING" or state["risk_level"] == "CRITICAL":
         raise ValueError("APPROVAL_REQUIRED")
-    cp = load_document(checkpoint_path(path))
+    cp = checkpoint if checkpoint is not None else load_document(checkpoint_path(path))
     before, prior = cp["state"], cp["log"]
     validate_pair(path, before, prior)
-    load_checkpoint(path, before, prior)
+    if checkpoint is None:
+        load_checkpoint(path, before, prior)
+    elif cp.get("resume_status") not in {"ANALYZING", "IMPLEMENTING", "WAITING_APPROVAL"}:
+        raise ValueError("APPROVAL_CHECKPOINT")
     if before["status"] != "WAITING_APPROVAL":
         raise ValueError("APPROVAL_CHECKPOINT")
     audit = log["approvals"][-1]
-    request = load_document(companion(path, "slack-request"))
+    request = request if request is not None else load_document(companion(path, "slack-request"))
     snapshot = digest({"state": before, "log": prior, "checkpoint": cp})
     if (audit["decision"] != "IMPLEMENTING" or audit["task_id"] != state["task_id"]
             or audit["snapshot_hash"] != snapshot
@@ -256,6 +281,8 @@ def run(task_file: Path, inputs: Path, executable: str, resume_approved: bool = 
     with task_lock(path):
         if companion(path, "pending").exists():
             raise ValueError("RECOVER_PAIR_FIRST")
+        if companion(path, "execution-decision").exists():
+            raise ValueError("RECOVER_POLICY_DECISION_FIRST")
         state, log = load_document(path), load_document(companion(path, "log"))
         validate_pair(path, state, log)
         manifest, bodies = bundle(state, inputs.absolute())
@@ -275,11 +302,26 @@ def run(task_file: Path, inputs: Path, executable: str, resume_approved: bool = 
             if previous["outcome"] == "RUNNING":
                 raise ValueError("INTERRUPTED_RUN_REQUIRES_RECONCILIATION")
             session = previous["session_id"]
+        # Local import avoids making policy validation and this transport circular.
+        from execution_policy import Budget, stop_budget
         if state["attempt"] >= 3:
+            stop_budget(path, "ATTEMPT_LIMIT")
             raise ValueError("ATTEMPT_LIMIT")
+        try:
+            budget = Budget(path, "ANALYZING")
+        except ValueError as error:
+            if str(error) == "EXECUTION_BUDGET_EXHAUSTED":
+                stop_budget(path, str(error))
+            raise
         with tempfile.TemporaryDirectory(prefix="sst-ax-codex-") as directory:
             cwd = Path(directory)
-            preflight(executable, cwd)
+            try:
+                preflight(executable, cwd, timeout=budget.remaining)
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                budget.finish("PREFLIGHT_FAILED")
+                if budget.value["active_seconds"] >= 1800:
+                    stop_budget(path, "EXECUTION_BUDGET_EXHAUSTED")
+                raise
             schema_path = cwd / "schema.json"
             atomic_json(schema_path, output_schema(load_document(SCHEMA_PATH)))
             args = command(executable, schema_path, session)
@@ -293,10 +335,12 @@ def run(task_file: Path, inputs: Path, executable: str, resume_approved: bool = 
             ).encode() + canonical({"manifest": manifest, "bodies": bodies,
                                      "contract": load_document(SCHEMA_PATH)})
             state["attempt"] += 1
+            budget.value["analysis_retries"] = max(0, state["attempt"] - 1)
             now = utc_now()
             record = {"session_id": session, "manifest_sha256": digest(manifest),
                       "outcome": "RUNNING", "result_file": None, "result_sha256": None,
-                      "attempt": state["attempt"], "started_at": now}
+                      "attempt": state["attempt"], "started_at": now,
+                      "inputs_directory": str(inputs.absolute())}
             log["codex_analysis"] = record
             entry = {"name": "codex-impact", "command": args[:-1], "exit_code": None,
                      "started_at": now, "finished_at": None, "artifact_paths": []}
@@ -319,7 +363,9 @@ def run(task_file: Path, inputs: Path, executable: str, resume_approved: bool = 
                 checkpoint()
 
             try:
-                code, raw, fault = invoke(args, prompt, cwd, on_session)
+                budget.tick()
+                code, raw, fault = invoke(args, prompt, cwd, on_session,
+                                          timeout=min(TIMEOUT, budget.remaining), on_tick=budget.tick)
                 entry["exit_code"] = code
                 final, outcome = (None, fault) if fault else parse_events(raw)
                 outcome = fault or outcome or ("CODEX_FAILED" if code else None)
@@ -348,7 +394,12 @@ def run(task_file: Path, inputs: Path, executable: str, resume_approved: bool = 
                         outcome = "VALID"
             except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError):
                 outcome = "EXECUTION_OR_RESULT_ERROR"
+            budget.finish(outcome)
+            if budget.value["active_seconds"] >= 1800 or budget.value["write_steps"] > 20:
+                outcome = "EXECUTION_BUDGET_EXHAUSTED"
             record["outcome"] = outcome
+            budget.value["analysis_sha256"] = digest(record)
+            atomic_json(budget.output, budget.value)
             if outcome == "VALID" and state["source_type"] == "SSTC_FEATURE" and any(
                     result["impacts"][key]["status"] == "PRESENT"
                     for key in ("protocol_contract", "sstd_change_required")):

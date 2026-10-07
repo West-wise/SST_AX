@@ -21,11 +21,15 @@ def main() -> int:
     parser.add_argument("--codex", default="codex")
     parser.add_argument("--validation-mode", choices=("local", "github"), default="local",
                         help="local runs Gradle; github leaves build/test to the Controller")
+    parser.add_argument("--resume", action="store_true", help="Resume the verified same Task/session/worktree within budget")
+    parser.add_argument("--legacy-active-seconds", type=float, help="Observed total active time for a legacy receipt without execution checkpoint")
+    parser.add_argument("--legacy-write-steps", type=int, help="Observed legacy write/shell steps; never infer zero from missing events")
     args = parser.parse_args()
     from sstc_worker import run
     try:
         outcome = run(args.task_file, args.sstc_repository, args.worktree, args.branch,
-                      args.input_directory, args.codex, args.validation_mode)
+                      args.input_directory, args.codex, args.validation_mode, args.resume,
+                      args.legacy_active_seconds, args.legacy_write_steps)
     except KeyboardInterrupt:
         print("SSTC_WORKER=INTERRUPTED", file=sys.stderr); return 130
     except Exception:

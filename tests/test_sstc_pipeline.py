@@ -140,7 +140,7 @@ class SstcPipelineTest(unittest.TestCase):
         self.branch = "ax/sstc-sync/pipeline-test"
         self.checkpoint = storage.checkpoint_path(self.path)
         self.checkpoint_bytes = self.checkpoint.read_bytes()
-        def implement(executable, session, prompt, cwd):
+        def implement(executable, session, prompt, cwd, **kwargs):
             self.assertEqual(session, fixture.SESSION)
             self.assertIn(b"Do not push or create a PR", prompt)
             path = cwd / "app/src/main/java/example/Screen.kt"
