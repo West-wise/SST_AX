@@ -20,6 +20,11 @@ DEFAULT_TASK_DIRECTORY = REPOSITORY_ROOT / "state" / "tasks"
 TASK_ID_PATTERN = re.compile(r"^(sstd-sync|sstc-feature)-(\d{8})-(\d{4})\.json$")
 
 
+class SafeParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        self.exit(2, "TASK_CREATION_ERROR: invalid arguments; see --help\n")
+
+
 def utc_now() -> str:
     """Return the current UTC time in ISO-8601 format."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -52,7 +57,7 @@ def next_task_id(source_type: str, task_directory: Path) -> str:
 
 def parse_args() -> argparse.Namespace:
     """Parse task creation arguments."""
-    parser = argparse.ArgumentParser(
+    parser = SafeParser(
         description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument("--source-type", choices=("SSTD_CHANGE", "SSTC_FEATURE"), required=True)
@@ -72,6 +77,10 @@ def parse_args() -> argparse.Namespace:
 
 def build_task_state(args: argparse.Namespace, task_id: str, now: str) -> dict[str, Any]:
     """Build the initial state document using only schema-defined fields."""
+    from impact_collection import check_content
+    for value in (task_id, args.source_reference, args.approval_reason, args.checkpoint_path, args.branch):
+        if value is not None:
+            check_content(value.encode("utf-8"))
     task_state: dict[str, Any] = {
         "task_id": task_id,
         "source_type": args.source_type,
@@ -132,7 +141,11 @@ def main() -> int:
         return 2
 
     now = utc_now()
-    task_state = build_task_state(args, task_id, now)
+    try:
+        task_state = build_task_state(args, task_id, now)
+    except ValueError:
+        print("TASK_CREATION_ERROR: input content rejected", file=sys.stderr)
+        return 2
     try:
         schema = load_json(DEFAULT_SCHEMA_PATH)
     except (OSError, json.JSONDecodeError) as error:

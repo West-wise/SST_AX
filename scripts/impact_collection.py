@@ -28,7 +28,7 @@ SHA40 = re.compile(r"[0-9a-f]{40}")
 SECRET = re.compile(
     rb"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|"
     rb"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
-    rb"xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[A-Z0-9]{16}|"
+    rb"(?:xox[baprs]|xapp)-[A-Za-z0-9-]{10,}|AKIA[A-Z0-9]{16}|"
     rb"sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b|"
     rb"(?i:authorization\s*:\s*bearer\s+\S+|"
     rb"(?:api[_-]?key|access[_-]?token|secret[_-]?key|password)"

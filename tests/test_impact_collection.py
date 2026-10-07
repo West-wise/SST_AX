@@ -484,6 +484,17 @@ class ImpactCollectionTest(unittest.TestCase):
         self.set_task("SSTD_CHANGE")
         self.assert_failed(self.collect())
 
+    def test_slack_app_tokens_are_rejected_before_request_persistence(self) -> None:
+        token = b"xapp-1-A123456-T123456-abcdefghijklmnopqrstuvwxyz012345"
+        for raw in (token, b"SLACK_APP_TOKEN=" + token):
+            with self.subTest(assignment=raw.startswith(b"SLACK_APP_TOKEN=")):
+                self.request_file.write_bytes(raw)
+                result = self.collect()
+                self.assert_failed(result)
+                self.assertNotIn(token, result.stdout + result.stderr)
+        from impact_collection import check_content
+        check_content(b"Document the xapp prefix; xapp-short is a synthetic label.")
+
     def test_existing_outputs_and_outputs_inside_source_repositories_are_never_overwritten(self) -> None:
         for form in ("file", "empty-directory", "populated-directory"):
             with self.subTest(form=form):

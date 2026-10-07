@@ -73,9 +73,13 @@ def validate_value(value: Any, schema: dict[str, Any], location: str) -> list[st
         if schema.get("format") == "date-time" and not is_date_time(value):
             errors.append(f"{location}: must be an ISO-8601 date-time")
         if schema.get("format") == "uri":
-            parsed = urlparse(value)
-            if not parsed.scheme:
+            try:
+                parsed = urlparse(value)
+            except ValueError:
                 errors.append(f"{location}: must be an absolute URI")
+            else:
+                if not parsed.scheme:
+                    errors.append(f"{location}: must be an absolute URI")
     if isinstance(value, int) and not isinstance(value, bool):
         if value < schema.get("minimum", value):
             errors.append(f"{location}: is below the minimum")
@@ -100,7 +104,7 @@ def validate_task_state(state: Any, schema: dict[str, Any]) -> list[str]:
     if schema.get("additionalProperties") is False:
         for name in state:
             if name not in properties:
-                errors.append(f"$.{name}: additional properties are not allowed")
+                errors.append("$: additional properties are not allowed")
     for name, value in state.items():
         if name in properties:
             errors.extend(validate_value(value, properties[name], f"$.{name}"))
