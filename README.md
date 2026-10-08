@@ -34,7 +34,11 @@ SSTD 내부 변경에 SSTC 영향이 없으면 PR을 만들지 않습니다. 계
 
 로컬 회귀 테스트는 임시 Git·저장 복구와 가짜 Codex/GitHub/Slack 응답을 사용합니다. 결과 형식 검증, 사람이 정한 의미 평가 사례, SSTC 패킷·단위 테스트는 각각 다른 오류를 찾습니다. 컴파일이나 JSON 성공은 실제 AI 판단 정확도를 보장하지 않습니다.
 
-기존 OCI에서 Slack 승인·거절, Codex 분석, 고정 SHA의 Actions 검증을 확인했습니다. 이번 Controller 연결, 중단된 UI Task 재개와 두 입력의 Draft PR 완주는 운영자가 OCI에서 확인해야 합니다. 로컬 Android 빌드 환경 실패는 후보 SHA의 Actions로 검증하며 미실행 테스트를 성공으로 기록하지 않습니다.
+2026-10-09(KST) 검증에서 실제 SSTD 고정 입력의 새 Task 재검증은 `VALID → COMPLETED / VERIFIED_NO_CLIENT_IMPACT`로 종료했습니다. 독립 SSTC UI 요청은 정상 Controller 접수 → 실제 AI 분석 → Slack 승인 → 같은 세션의 구현 → 후보 SHA의 Actions → [SSTC Draft PR #5](https://github.com/West-wise/Server_State_Telemetry_Client/pull/5) → `READY_FOR_REVIEW`까지 확인했습니다. 별도 새 Task의 실제 Slack 거절은 `REJECTED`로 종료했고 Worker·Draft PR 생성과 거절 후 실행이 차단됐습니다.
+
+로컬 회귀 335개 통과는 [#20](https://github.com/West-wise/SST_AX/pull/20)·[#21](https://github.com/West-wise/SST_AX/pull/21)을 포함한 `d2804ac` 기준 기록입니다. 서버 변경 전체·숫자 범위·기대 동작을 명시한 새 가상 사례 두 개는 실제 AI 평가에서 MATCH였습니다. 원본 네 사례의 1 MATCH·3 MISMATCH와 기존 실패 기록은 보존했습니다. 테스트 수, 가상 평가, 실제 경로 완료 증거를 각각 구분합니다.
+
+전체 1차 완료 판정은 보류합니다. 수정이 필요한 실제 SSTD 변경의 승인·구현·Actions·Draft PR 경로, 원본 의미 평가 불일치, 기기 화면 확인, 운영 계정 격리·장시간 운용 검증이 남아 있습니다. 상세 revision·Task·검증 범위는 [1차 검증 현황](docs/acceptance-20261009.md)에 기록했습니다. 로컬 Android 빌드 환경 실패는 후보 SHA의 Actions로 검증하며 미실행 테스트를 성공으로 기록하지 않습니다.
 
 ## 문서
 
@@ -45,5 +49,6 @@ SSTD 내부 변경에 SSTC 영향이 없으면 PR을 만들지 않습니다. 계
 - [후보 검증·Draft PR](docs/sstc-pipeline.md) · [GitHub Sensor](docs/github-validation.md)
 - [Slack 설정](docs/slack-quickstart.md) · [운영·복구](docs/operations.md) · [보안](docs/security-model.md)
 - [원래 목표에 대한 감사와 교정](docs/original-goal-audit-20261006.md)
+- [1차 검증 현황과 남은 항목](docs/acceptance-20261009.md)
 
 `contracts/`는 입력·결과 계약, `policies/`는 실행 권한, `scripts/`는 실행기, `state/`는 로컬 상태, `tests/`는 회귀·평가 사례입니다. 실제 상태와 인증정보는 commit하지 않습니다. Slack 일일 보고·운영 지표는 기본 완료 조건과 분리합니다. [초기 전체 계획](SST_AX_Codex_CLI_Architecture_Plan.md)은 구상 기록이며 현재 동작은 코드와 위 문서를 기준으로 합니다.
