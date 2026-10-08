@@ -6,6 +6,12 @@ ANALYZING Task의 본문 해시를 재계산하고 stdin으로 임시 폴더에 
 
 CLI·시스템 설정·저장된 로그인은 관리자 신뢰 영역입니다. Slack/GitHub token과 Git 제어 환경은 Worker에 전달하지 않습니다. CLI 설정은 OS 권한 격리를 대신하지 않으며 세션 저장소에는 입력이 남을 수 있습니다.
 
+분석의 `change_required`는 SSTC 수정 필요성입니다. 위험도·영향·승인 사유는 필요한 SSTC 작업과 그 작업에 필요한 추가 SSTD 변경을 기준으로 판단합니다. 입력에 포함된 SSTD CI·Release·배포·서비스 재시작·서버 전용 dependency만으로 SSTC의 dependency·파괴적 작업·승인·위험을 선언하지 않습니다. protocol/parser/model뿐 아니라 수치·단위·범위·화면 표시의 호환성을 확인합니다. `sstd_change_required`는 이미 입력으로 주어진 SSTD 변경이 아닌, SSTC 작업을 위해 추가로 필요한 SSTD 변경입니다. 이미 변경된 SSTD 계약에 대한 SSTC 적응의 protocol 영향과 SSTC 요청으로 새 SSTD 계약을 만드는 승인 경계는 유지합니다.
+
+`result.evidence`에는 ID별로 한 항목만 선언하고 이유를 합칩니다. 각 `impact.evidence_ids` 안의 중복은 금지하지만 서로 다른 영향에서 같은 ID를 참조할 수 있습니다. `UNKNOWN` 또는 판단·승인 범위를 막는 미해결 질문이 있으면 `UNDETERMINED`이며, 이 판정에는 차단 사유를 설명하는 질문이 최소 하나 필요합니다. 비차단 운영 관찰은 summary나 증거 이유에 기록합니다. `NOT_REQUIRED`는 위험도 NONE·모든 영향 ABSENT·승인 사유 없음·질문 없음일 때만 허용합니다. 프롬프트가 이 규칙을 안내해도 기존 파서 검증을 통과해야 하며 잘못된 결과를 자동 보정하지 않습니다.
+
+`INVALID_RESULT`에는 Task 로그의 `codex_analysis.validation_errors`로 고정 오류 코드와 필드 위치를 남깁니다. 원시 이벤트·stderr는 저장하지 않으며 기존 분석 JSON·실패 상태·checkpoint는 보존합니다. OCI Task `sstd-sync-20261008-0001`의 입력 완전성과 실패 원인은 사용자 제공 사실이며, 로컬에서 원본을 재검증하지 않았습니다. 이 Task의 실패 기록을 수정하거나 자동 재개하지 않습니다. 교정 후 OCI 확인은 운영자가 별도 새 Task로 실행합니다. 로컬 합성 회귀 통과를 실제 AI 판단·SSTC 후보 Actions·두 입력의 Draft PR 완주 또는 1차 완료로 기록하지 않습니다. 기존 [완료 검증 기준](original-goal-audit-20261006.md)과 [의미 평가](impact-analysis.md#의미-평가)를 유지합니다.
+
 ```bash
 python -B scripts/run_codex_impact.py \
   --task-file state/tasks/<task-id>.json \
