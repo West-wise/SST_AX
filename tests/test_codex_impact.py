@@ -75,6 +75,7 @@ class CodexImpactTest(unittest.TestCase):
     def execute(self, *, outcome=None, result=None, session=SESSION):
         def fake(args, prompt, cwd, on_session, **kwargs):
             self.last_args = args
+            self.last_prompt = prompt.decode("utf-8").split("\n", 1)[0]
             self.assertIn(b"untrusted data", prompt)
             self.assertEqual(list(cwd.iterdir()), [cwd / "schema.json"])
             on_session(session)
@@ -124,6 +125,105 @@ class CodexImpactTest(unittest.TestCase):
         self.assertEqual(self.pair(), before)
         self.assertEqual(storage.load_json(storage.companion(self.path, "execution")), budget)
         self.assertNotIn("--last", self.last_args)
+
+    def sstd_operations(self):
+        fixture = storage.load_json(ROOT / "tests/fixtures/impact/sstd-not-required.json")
+        self.path = self.path.with_name(fixture["task"]["task_id"] + ".json")
+        self.script("create_task.py", "--source-type", "SSTD_CHANGE",
+                    "--source-reference", fixture["task"]["source_reference"],
+                    "--risk-level", "MEDIUM", "--task-id", self.path.stem,
+                    "--task-directory", str(self.path.parent))
+        self.move("ANALYZING")
+        self.manifest, self.result = fixture["manifest"], fixture["result"]
+        bodies = {
+            "source": "Synthetic SSTD CI adds a build dependency and a Release deploy restart. "
+                      "The packet fields, units, ranges and behavior are unchanged.",
+            "client": "Synthetic SSTC decoder and UI consume the unchanged packet.",
+            "instructions": "Synthetic SSTC dependency and Android permission requirements are unchanged.",
+        }
+        for item in self.manifest["evidence"]:
+            raw = bodies[item["evidence_id"]].encode()
+            item["content_sha256"] = hashlib.sha256(raw).hexdigest()
+            (self.inputs / "evidence" / (item["evidence_id"] + ".txt")).write_bytes(raw)
+        self.write_manifest()
+
+    def test_prompt_defines_scope_and_result_consistency(self):
+        self.assertEqual(self.execute(), "VALID")
+        for rule in (
+            "change_required means whether SSTC needs modification",
+            "SSTD CI, Release, deployment, service restart",
+            "sstd_change_required means an additional SSTD change",
+            "protocol, parser, model, numeric values, units, ranges and UI display",
+            "Each evidence_id may appear only once in result.evidence",
+            "unique within each impact.evidence_ids",
+            "The same ID may support multiple impacts",
+            "UNKNOWN impact or any unresolved question requires change_required=UNDETERMINED",
+            "UNDETERMINED requires at least one unresolved question",
+            "NOT_REQUIRED requires risk_level=NONE",
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, self.last_prompt)
+
+    def test_sstd_operations_no_change_preserves_task_authority(self):
+        self.sstd_operations()
+        before, _ = self.pair()
+        self.assertEqual(self.execute(), "VALID")
+        state, log = self.pair()
+        self.assertEqual(state["status"], "ANALYZING")
+        self.assertEqual(state["risk_level"], before["risk_level"])
+        record = log["codex_analysis"]
+        result = storage.load_json(self.path.parent / record["result_file"])
+        self.assertEqual(result["change_required"], "NOT_REQUIRED")
+        self.assertEqual(result["approval_reasons"], [])
+        self.assertEqual(result["input_context"], self.manifest["input_context"])
+        self.assertIn("SSTD CI, Release, deployment, service restart", self.last_prompt)
+
+    def assert_invalid_preserved(self, diagnostic):
+        original = copy.deepcopy(self.result)
+        self.assertEqual(self.execute(), "INVALID_RESULT")
+        state, log = self.pair()
+        self.assertEqual(state["status"], "ANALYSIS_FAILED")
+        self.assertEqual(log["stop_reason"], "INVALID_RESULT")
+        self.assertIn(diagnostic, log["codex_analysis"]["validation_errors"])
+        self.assertIsNone(log["codex_analysis"]["result_file"])
+        artifact = self.path.with_name(self.path.stem + ".analysis-1.json")
+        self.assertEqual(storage.load_json(artifact), original)
+        checkpoint = storage.load_json(storage.companion(self.path, "codex-checkpoint"))
+        self.assertEqual(checkpoint["state"], state)
+        self.assertEqual(checkpoint["log"], log)
+
+    def test_duplicate_evidence_result_preserves_failure(self):
+        self.sstd_operations()
+        self.result["evidence"].append(dict(self.result["evidence"][0], reason="Another reason."))
+        self.assert_invalid_preserved("DUPLICATE_EVIDENCE: result.evidence[3]")
+
+    def test_duplicate_impact_ids_preserves_failure(self):
+        self.sstd_operations()
+        self.result["impacts"]["dependency"]["evidence_ids"].append("source")
+        self.assert_invalid_preserved("DUPLICATE_ITEM: result.impacts.dependency.evidence_ids")
+
+    def test_unknown_with_required_preserves_failure(self):
+        self.result["impacts"]["dependency"]["status"] = "UNKNOWN"
+        self.assert_invalid_preserved("UNDETERMINED_REQUIRED: result.change_required")
+
+    def test_questions_with_not_required_preserves_failure(self):
+        self.sstd_operations()
+        self.result["unresolved_questions"] = ["Does the supplied packet remain compatible?"]
+        self.assert_invalid_preserved("UNDETERMINED_REQUIRED: result.change_required")
+
+    def test_undetermined_without_question_preserves_failure(self):
+        self.sstd_operations()
+        self.result["change_required"] = "UNDETERMINED"
+        self.assert_invalid_preserved("QUESTION_REQUIRED: result.unresolved_questions")
+
+    def test_unknown_with_question_accepts_undetermined(self):
+        self.sstd_operations()
+        self.result["change_required"] = "UNDETERMINED"
+        self.result["risk_level"] = "LOW"
+        self.result["impacts"]["protocol_contract"]["status"] = "UNKNOWN"
+        self.result["unresolved_questions"] = ["Is the packet behavior compatible?"]
+        self.assertEqual(self.execute(), "VALID")
+        self.assertEqual(self.pair()[0]["status"], "ANALYZING")
 
     def test_evidence_tampering_refuses_before_launch(self):
         (self.inputs / "evidence/source.txt").write_text("changed", encoding="utf-8")
