@@ -117,8 +117,13 @@ class ExecutionPolicyTest(unittest.TestCase):
         storage.save_pair(self.path, state, log)
         def analyze(args, prompt, cwd, on_session, **kwargs):
             on_session(fixture.SESSION)
-            response = {key: value for key, value in self.f.result.items()
+            response = {key: copy.deepcopy(value) for key, value in self.f.result.items()
                         if key not in ("task_id", "source_type", "input_context")}
+            for item in response["evidence"]:
+                item["impact_names"] = [name for name, impact in response["impacts"].items()
+                                        if item["evidence_id"] in impact["evidence_ids"]]
+            for impact in response["impacts"].values():
+                del impact["evidence_ids"]
             events = [{"type": "thread.started", "thread_id": fixture.SESSION},
                       {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(response)}},
                       {"type": "turn.completed"}]

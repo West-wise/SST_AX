@@ -65,17 +65,26 @@ class CodexImpactTest(unittest.TestCase):
     def pair(self):
         return storage.load_json(self.path), storage.load_json(storage.companion(self.path, "log"))
 
-    def events(self, result=None):
-        response = self.result if result is None else result
+    def model_response(self, result=None):
+        response = copy.deepcopy(self.result if result is None else result)
         response = {key: value for key, value in response.items()
                     if key not in ("task_id", "source_type", "input_context")}
+        for item in response["evidence"]:
+            item["impact_names"] = [name for name, impact in response["impacts"].items()
+                                    if item["evidence_id"] in impact["evidence_ids"]]
+        for impact in response["impacts"].values():
+            del impact["evidence_ids"]
+        return response
+
+    def events(self, result=None, model=None):
+        response = self.model_response(result) if model is None else model
         return b"\n".join(worker.canonical(event) for event in [
             {"type": "thread.started", "thread_id": SESSION},
             {"type": "item.completed", "item": {"type": "agent_message",
                 "text": json.dumps(response)}},
             {"type": "turn.completed"}])
 
-    def execute(self, *, outcome=None, result=None, session=SESSION):
+    def execute(self, *, outcome=None, result=None, model=None, session=SESSION):
         def fake(args, prompt, cwd, on_session, **kwargs):
             self.last_args = args
             self.last_prompt = prompt.decode("utf-8").split("\n", 1)[0]
@@ -88,7 +97,7 @@ class CodexImpactTest(unittest.TestCase):
             self.assertEqual(storage.load_json(storage.companion(self.path, "codex-checkpoint"))["log"], log)
             if outcome == "RATE_LIMIT":
                 return 1, b'{"type":"turn.failed","error":{"message":"usage limit reached"}}', None
-            return 0, self.events(result), outcome
+            return 0, self.events(result, model), outcome
         with patch.object(worker, "preflight"), patch.object(worker, "invoke", side_effect=fake):
             return worker.run(self.path, self.inputs, "codex")
 
@@ -159,8 +168,10 @@ class CodexImpactTest(unittest.TestCase):
             "sstd_change_required means an additional SSTD change",
             "protocol, parser, model, numeric values, units, ranges and UI display",
             "Each evidence_id may appear only once in result.evidence",
-            "unique within each impact.evidence_ids",
-            "The same ID may support multiple impacts",
+            "Each evidence item requires impact_names",
+            "The same evidence item may support multiple impacts",
+            "Use impact_names=[]",
+            "Do not return impact.evidence_ids",
             "UNKNOWN impact or any unresolved question requires change_required=UNDETERMINED",
             "UNDETERMINED requires at least one unresolved question",
             "NOT_REQUIRED requires risk_level=NONE",
@@ -182,9 +193,10 @@ class CodexImpactTest(unittest.TestCase):
         self.assertEqual(result["input_context"], self.manifest["input_context"])
         self.assertIn("SSTD CI, Release, deployment, service restart", self.last_prompt)
 
-    def assert_invalid_preserved(self, diagnostic, *, model_invalid=False):
+    def assert_invalid_preserved(self, diagnostic, *, model_invalid=False, model=None):
         original = copy.deepcopy(self.result)
-        self.assertEqual(self.execute(), "INVALID_RESULT")
+        expected_model = self.model_response(original) if model is None else model
+        self.assertEqual(self.execute(model=model), "INVALID_RESULT")
         state, log = self.pair()
         self.assertEqual(state["status"], "ANALYSIS_FAILED")
         self.assertEqual(log["stop_reason"], "INVALID_RESULT")
@@ -196,8 +208,6 @@ class CodexImpactTest(unittest.TestCase):
         else:
             self.assertEqual(storage.load_json(artifact), original)
         model_file = self.path.parent / log["codex_analysis"]["model_result_file"]
-        expected_model = {key: value for key, value in original.items()
-                          if key not in ("task_id", "source_type", "input_context")}
         self.assertEqual(storage.load_json(model_file), expected_model)
         checkpoint = storage.load_json(storage.companion(self.path, "codex-checkpoint"))
         self.assertEqual(checkpoint["state"], state)
@@ -206,12 +216,14 @@ class CodexImpactTest(unittest.TestCase):
     def test_duplicate_evidence_result_preserves_failure(self):
         self.sstd_operations()
         self.result["evidence"].append(dict(self.result["evidence"][0], reason="Another reason."))
-        self.assert_invalid_preserved("DUPLICATE_EVIDENCE: result.evidence[3]")
+        self.assert_invalid_preserved("DUPLICATE_EVIDENCE: result.evidence[3]", model_invalid=True)
 
-    def test_duplicate_impact_ids_preserves_failure(self):
+    def test_duplicate_impact_names_preserves_failure(self):
         self.sstd_operations()
-        self.result["impacts"]["dependency"]["evidence_ids"].append("source")
-        self.assert_invalid_preserved("DUPLICATE_ITEM: result.impacts.dependency.evidence_ids", model_invalid=True)
+        model = self.model_response()
+        model["evidence"][0]["impact_names"] = ["dependency", "dependency"]
+        self.assert_invalid_preserved("DUPLICATE_ITEM: result.evidence[0].impact_names",
+                                      model_invalid=True, model=model)
 
     def test_unknown_with_required_preserves_failure(self):
         self.result["impacts"]["dependency"]["status"] = "UNKNOWN"
@@ -244,6 +256,90 @@ class CodexImpactTest(unittest.TestCase):
         self.assertFalse(self.last_schema["additionalProperties"])
         self.assertIn("input_context", storage.load_json(worker.SCHEMA_PATH)["properties"])
 
+    def test_model_schema_has_one_evidence_mapping_and_keeps_final_schema(self):
+        final_schema = storage.load_json(worker.SCHEMA_PATH)
+        before = copy.deepcopy(final_schema)
+        schema = worker.model_schema(final_schema)
+        self.assertEqual(final_schema, before)
+        self.assertNotIn("evidence_ids", schema["$defs"]["impact"]["properties"])
+        self.assertNotIn("evidence_ids", schema["$defs"]["impact"]["required"])
+        self.assertFalse(schema["$defs"]["impact"]["additionalProperties"])
+        item = schema["properties"]["evidence"]["items"]
+        self.assertIn("impact_names", item["required"])
+        self.assertEqual(item["properties"]["impact_names"]["items"]["enum"],
+                         list(self.result["impacts"]))
+        self.assertTrue(item["properties"]["impact_names"]["uniqueItems"])
+        self.assertEqual(item["properties"]["impact_names"]["maxItems"], 6)
+        self.assertIn("evidence_ids", final_schema["$defs"]["impact"]["required"])
+        self.assertNotIn("impact_names", final_schema["properties"]["evidence"]["items"]["properties"])
+
+    def test_controller_builds_manifest_permission_reference_from_one_declaration(self):
+        self.sstd_operations()
+        item = dict(self.manifest["evidence"][1], evidence_id="e0013",
+                    path="app/src/main/AndroidManifest.xml")
+        raw = b"Synthetic existing CAMERA and INTERNET permissions remain unchanged."
+        item["content_sha256"] = hashlib.sha256(raw).hexdigest()
+        self.manifest["evidence"].append(item)
+        (self.inputs / "evidence/e0013.txt").write_bytes(raw)
+        self.write_manifest()
+        self.result["evidence"].append({"evidence_id": "e0013", "reason": "Existing permissions are unchanged."})
+        self.result["impacts"]["android_permission"]["evidence_ids"].append("e0013")
+        original = copy.deepcopy(self.result)
+        self.assertEqual(self.execute(), "VALID")
+        record = self.pair()[1]["codex_analysis"]
+        result = storage.load_json(self.path.parent / record["result_file"])
+        model = storage.load_json(self.path.parent / record["model_result_file"])
+        self.assertEqual(result, original)
+        self.assertEqual(model["evidence"][-1]["impact_names"], ["android_permission"])
+        self.assertEqual(model["evidence"][0]["impact_names"], list(original["impacts"]))
+        for impact in model["impacts"].values():
+            self.assertNotIn("evidence_ids", impact)
+
+    def test_summary_only_evidence_keeps_its_reason_without_adding_references(self):
+        self.sstd_operations()
+        for impact in self.result["impacts"].values():
+            impact["evidence_ids"].remove("instructions")
+        self.assertEqual(self.execute(), "VALID")
+        record = self.pair()[1]["codex_analysis"]
+        result = storage.load_json(self.path.parent / record["result_file"])
+        model = storage.load_json(self.path.parent / record["model_result_file"])
+        self.assertEqual(result, self.result)
+        self.assertEqual(model["evidence"][-1]["impact_names"], [])
+
+    def test_unknown_evidence_id_is_still_rejected_and_preserved(self):
+        self.sstd_operations()
+        self.result["evidence"].append({"evidence_id": "unregistered", "reason": "Untrusted evidence."})
+        self.assert_invalid_preserved("EVIDENCE_REFERENCE: result.evidence[3]")
+
+    def test_unknown_impact_name_is_rejected_without_echoing_it(self):
+        model = self.model_response()
+        model["evidence"][0]["impact_names"] = ["private-untrusted-impact"]
+        self.assert_invalid_preserved("ENUM: result.evidence[0].impact_names[0]",
+                                      model_invalid=True, model=model)
+        self.assertNotIn("private-untrusted-impact",
+                         json.dumps(self.pair()[1]["codex_analysis"]["validation_errors"]))
+
+    def test_missing_impact_mapping_is_rejected(self):
+        model = self.model_response()
+        del model["evidence"][0]["impact_names"]
+        self.assert_invalid_preserved("REQUIRED: result.evidence[0].impact_names",
+                                      model_invalid=True, model=model)
+
+    def test_ai_supplied_impact_references_are_rejected(self):
+        model = self.model_response()
+        model["impacts"]["ui_ux"]["evidence_ids"] = ["source"]
+        self.assert_invalid_preserved("EXTRA_PROPERTY: result.impacts.ui_ux",
+                                      model_invalid=True, model=model)
+
+    def test_definite_impact_without_support_is_not_filled_from_other_evidence(self):
+        self.sstd_operations()
+        self.result["impacts"]["android_permission"]["evidence_ids"] = []
+        self.assert_invalid_preserved("EVIDENCE_REQUIRED: result.impacts.android_permission")
+
+    def test_controller_does_not_fill_missing_approval_reasons(self):
+        self.result["approval_reasons"] = []
+        self.assert_invalid_preserved("APPROVAL_MISSING: result.approval_reasons")
+
     def test_controller_binds_git_revision_and_preserves_model_response(self):
         self.sstd_operations()
         revision = "08f917cf853785cf026c6c32f7af244097ba3a15"
@@ -261,14 +357,16 @@ class CodexImpactTest(unittest.TestCase):
             self.assertNotIn(key, model)
             self.assertEqual(result[key], self.manifest[key])
         self.assertEqual(result["input_context"]["sstd_revision"], revision)
-        self.assertEqual({key: result[key] for key in model}, model)
+        self.assertEqual(result, self.result)
+        self.assertEqual(model, self.model_response())
         self.assertEqual(worker.digest(result), record["result_sha256"])
         self.assertEqual(state["status"], "ANALYZING")
 
     def test_ai_supplied_identity_is_rejected_without_overwriting_it(self):
         self.sstd_operations()
-        response = copy.deepcopy(self.result)
-        response["input_context"]["sstd_revision"] = "08f917cf853785cf026c6c32d893e2961cce0f2"
+        response = self.model_response()
+        response["input_context"] = dict(self.result["input_context"],
+                                         sstd_revision="08f917cf853785cf026c6c32d893e2961cce0f2")
         # Supply the forbidden field directly, bypassing the normal fake response helper.
         def fake(args, prompt, cwd, on_session, **kwargs):
             on_session(SESSION)
@@ -297,8 +395,8 @@ class CodexImpactTest(unittest.TestCase):
         self.assertEqual(context["request_sha256"], self.manifest["evidence"][0]["content_sha256"])
 
     def test_controller_metadata_does_not_exceed_result_budget(self):
-        response = {key: value for key, value in self.result.items()
-                    if key not in ("task_id", "source_type", "input_context")}
+        response = self.model_response()
+        response["evidence"] = [dict(response["evidence"][0], impact_names=list(response["impacts"]))]
         response["summary"] = ""
         response["summary"] = "X" * (worker.MAX_TOTAL_BYTES - len(worker.canonical(response)))
         candidate = worker.canonical(response)
@@ -334,7 +432,7 @@ class CodexImpactTest(unittest.TestCase):
             self.manifest = original
 
     def test_invalid_json_result_never_authorizes(self):
-        self.assertEqual(self.execute(result={"unexpected": True}), "INVALID_RESULT")
+        self.assertEqual(self.execute(model={"unexpected": True}), "INVALID_RESULT")
         state, log = self.pair()
         self.assertEqual(state["status"], "ANALYSIS_FAILED")
         self.assertIsNone(log["codex_analysis"]["result_file"])
@@ -602,8 +700,7 @@ class CodexImpactTest(unittest.TestCase):
             "type": "error", "message": "A nonfatal notice"}})
         final, outcome = worker.parse_events(warning + b"\n" + self.events())
         self.assertIsNone(outcome)
-        expected = {key: value for key, value in self.result.items()
-                    if key not in ("task_id", "source_type", "input_context")}
+        expected = self.model_response()
         self.assertEqual(json.loads(final), expected)
         error = worker.canonical({"type": "error", "message": "An unrecoverable stream error"})
         self.assertEqual(worker.parse_events(error + b"\n" + self.events())[1], "CODEX_FAILED")
