@@ -42,6 +42,29 @@ class SemanticEvaluationTest(unittest.TestCase):
         case = load_document(ROOT / "tests/fixtures/semantic/missing-decoder.json")
         self.assertIn("CHANGE_REQUIRED", evaluation.evaluate(case, fixture["result"]))
 
+    def test_complete_unit_case_rejects_omitted_ui_and_extra_server_work(self):
+        case = load_document(ROOT / "tests/fixtures/semantic/uptime-unit-complete.json")
+        result = load_document(ROOT / "tests/fixtures/impact/sstd-required.json")["result"]
+        result["impacts"]["ui_ux"]["status"] = "PRESENT"
+        result["approval_reasons"].append("UI_CHANGE")
+        self.assertEqual(evaluation.evaluate(case, result), [])
+        missing_ui = copy.deepcopy(result)
+        missing_ui["impacts"]["ui_ux"]["status"] = "ABSENT"
+        self.assertIn("IMPACT_UI_UX", evaluation.evaluate(case, missing_ui))
+        extra_server = copy.deepcopy(result)
+        extra_server["impacts"]["sstd_change_required"]["status"] = "PRESENT"
+        self.assertIn("IMPACT_SSTD_CHANGE_REQUIRED", evaluation.evaluate(case, extra_server))
+
+    def test_complete_width_case_rejects_extra_ui_and_server_work(self):
+        case = load_document(ROOT / "tests/fixtures/semantic/field-width-complete.json")
+        result = load_document(ROOT / "tests/fixtures/impact/sstd-required.json")["result"]
+        self.assertEqual(evaluation.evaluate(case, result), [])
+        for name in ("ui_ux", "sstd_change_required"):
+            with self.subTest(impact=name):
+                changed = copy.deepcopy(result)
+                changed["impacts"][name]["status"] = "PRESENT"
+                self.assertIn("IMPACT_" + name.upper(), evaluation.evaluate(case, changed))
+
 
 if __name__ == "__main__":
     unittest.main()

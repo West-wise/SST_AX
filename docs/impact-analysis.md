@@ -108,9 +108,20 @@ host 처리는 새 검증기 경계에서 일관되게 검사하며 기존 Task 
 해당 사례의 입력으로 얻은 실제 분석 결과를 다음처럼 예상 분류와 비교합니다.
 
 ```bash
-python -B scripts/evaluate_impact.py \
+python3 -B scripts/evaluate_impact.py \
   --case-file tests/fixtures/semantic/uptime-unit.json \
   --result-file /absolute/path/case-analysis.json
 ```
 
 `MATCH`는 해당 사례의 예상 change/impact/approval 분류와 일치한다는 뜻이며 실행 권한이 아닙니다. 다른 입력의 결과를 비교한 점수는 의미 없습니다. 로컬 테스트는 형식에 맞는 잘못된 NOT_REQUIRED가 거부되는지 확인합니다. 실제 모델 정확도는 별도 replay 결과로 측정합니다.
+
+완성된 입력을 비교하는 별도 사례도 제공합니다. 기존 네 사례와 기대값은 유지합니다.
+
+| 새 사례 | 완성된 서버 변경과 기대 동작 | 예상 분류 |
+|---|---|---|
+| `uptime-unit-complete` | uint32 밀리초의 오버플로 방지·포화 처리, 필드 문서화, 클라이언트 초 정규화와 상한의 `49일 이상` 표시 | REQUIRED, protocol/UI PRESENT, 추가 SSTD ABSENT |
+| `field-width-complete` | uint64 선언·138바이트 크기 검사·수집 코드 수정, 지원 범위는 0..UINT32_MAX 초, 클라이언트 decoder 크기·offset 수정, 기존 UI 유지 | REQUIRED, protocol PRESENT, UI/추가 SSTD ABSENT |
+
+`source_replacements`는 고정 SSTD 코드에 적용할 가상 변경 전체입니다. 실제 평가 시 각 `before`가 원본에 정확히 한 번 나타나는지 확인하고, 변경한 파일의 after 본문과 unified diff를 함께 제공합니다. `TcpServer.cpp`와 `PacketUtil.cpp`의 동적 크기 직렬화 코드도 포함합니다. 기본 SHA는 원본 문맥 식별자이며 가상 after 코드의 실제 commit SHA가 아닙니다. 숫자 경계와 기대 클라이언트 동작은 모델 입력에 포함하되 `expected` 분류는 모델에게 제공하지 않습니다.
+
+원본 실제 AI 평가에서는 `uptime-unit`, `field-width`, `missing-decoder`가 MISMATCH이고 `daemon-log-only`만 MATCH였습니다. 단위 상한·서버 후속 코드가 명시된 새 사례의 MATCH는 원본 불일치를 해결하거나 실제 SSTD 변경 경로를 통과했다는 뜻이 아닙니다. 실제 GitHub 감지 → 분석 → 승인 → 구현 → Actions → Draft PR 증거, 실제 거절 분기와 기기 검증은 별도로 확인합니다.
