@@ -433,7 +433,11 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                     budget.finish("INTERRUPTED")
                     raise
                 schema_path = cwd / "schema.json"
-                atomic_json(schema_path, output_schema(load_document(SCHEMA_PATH)))
+                analysis_schema = load_document(SCHEMA_PATH)
+                for name in ("task_id", "source_type", "input_context"):
+                    del analysis_schema["properties"][name]
+                    analysis_schema["required"].remove(name)
+                atomic_json(schema_path, output_schema(analysis_schema))
                 args = command(executable, schema_path, session)
                 prompt = (
                     "Analyze the supplied SST-AX evidence only. Return one JSON result matching the schema. "
@@ -449,7 +453,9 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                     "not the SSTD change already supplied. Adapting SSTC to an already changed SSTD contract "
                     "can be a protocol_contract impact; a new SSTD contract needed for an SSTC_FEATURE "
                     "must be reported for human approval. "
-                    "Use only manifest evidence IDs and preserve task_id, source_type and input_context exactly. "
+                    "Use only manifest evidence IDs. Return analysis fields only; do not return task_id, "
+                    "source_type or input_context. The Controller supplies these from the verified manifest, "
+                    "including Git-resolved revisions and the request snapshot hash. "
                     "Each evidence_id may appear only once in result.evidence; combine its reasons there. "
                     "References must be declared in result.evidence and unique within each impact.evidence_ids. "
                     "The same ID may support multiple impacts. Every impact in a definite result needs evidence. "
@@ -464,7 +470,7 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                     "reasons in the contract. State uncertainty honestly. "
                     "This turn remains read-only even after human approval.\n"
                 ).encode() + canonical({"manifest": manifest, "bodies": bodies,
-                                         "contract": load_document(SCHEMA_PATH)})
+                                         "contract": analysis_schema})
                 state["attempt"] += 1
                 budget.value["analysis_retries"] = max(0, state["attempt"] - 1)
                 now = utc_now()
@@ -510,14 +516,28 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                         if len(candidate) > MAX_TOTAL_BYTES:
                             raise ValueError("RESULT_SIZE")
                         check_content(candidate)
-                        result = decode_document(candidate)
-                        check_content(canonical(result))
-                        # Retain decoded final JSON only, never raw events or stderr.
-                        result_file = path.with_name(f"{path.stem}.analysis-{state['attempt']}.json")
-                        with result_file.open("xb") as stream:
-                            stream.write(canonical(result))
-                        entry["artifact_paths"].append(result_file.name)
-                        validation_errors = validate_impact(state, manifest, result)
+                        model_result = decode_document(candidate)
+                        check_content(canonical(model_result))
+                        # Preserve the decoded model response separately from Controller metadata.
+                        model_file = path.with_name(f"{path.stem}.analysis-{state['attempt']}.model.json")
+                        with model_file.open("xb") as stream:
+                            stream.write(canonical(model_result))
+                        entry["artifact_paths"].append(model_file.name)
+                        record.update(model_result_file=model_file.name,
+                                      model_result_sha256=digest(model_result))
+                        validation_errors = validate_shape(model_result, analysis_schema, analysis_schema, "result")
+                        if not validation_errors:
+                            result = {**model_result, "task_id": manifest["task_id"],
+                                      "source_type": manifest["source_type"],
+                                      "input_context": copy.deepcopy(manifest["input_context"])}
+                            encoded = canonical(result)
+                            if len(encoded) > MAX_TOTAL_BYTES:
+                                raise ValueError("RESULT_SIZE")
+                            result_file = path.with_name(f"{path.stem}.analysis-{state['attempt']}.json")
+                            with result_file.open("xb") as stream:
+                                stream.write(encoded)
+                            entry["artifact_paths"].append(result_file.name)
+                            validation_errors = validate_impact(state, manifest, result)
                         if validation_errors:
                             record["validation_errors"] = validation_errors
                             outcome = "INVALID_RESULT"
