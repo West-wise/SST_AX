@@ -35,6 +35,8 @@ RECEIVED → ANALYZING → WAITING_APPROVAL? → IMPLEMENTING → VALIDATING →
 - Treat build, test, lint, schema, and parser validation as deterministic Sensors.
 - Do not delete tests, weaken assertions, disable lint, suppress warnings, or bypass security checks to obtain a passing result.
 - When validation fails, preserve the failure output and follow the retry policy. Do not create a Draft PR for a failed task.
+- 검증 보고에는 대상 revision·명령·exit code·산출물·미검증 범위를 기록한다. 로컬 회귀 테스트 수, 실제 AI `VALID`, 의미 평가 `MATCH`, 승인·구현·Actions·Draft PR 완료 증거를 구분한다.
+- 고정 입력 replay와 가상 평가의 통과를 정상 Controller 접수부터 완료까지의 실제 경로 증거로 대체하지 않는다. 전체 완료 여부는 남은 수용 기준과 함께 보고한다.
 
 ## Approval, Budget, and Stop Conditions
 
@@ -52,6 +54,8 @@ RECEIVED → ANALYZING → WAITING_APPROVAL? → IMPLEMENTING → VALIDATING →
 ## Contributor Workflow
 
 - 이 절은 저장소 기여자의 작업 절차이며 Controller 런타임 정책이나 CLI 상태 전이 조건을 완화하지 않는다.
+- 이 저장소의 Python 명령은 `python3`를 사용한다.
+- 실패가 종결된 Task의 교정 검증은 원본 state·입력·결과를 보존하고 새 Task로 수행한다. 실패 결과나 Controller cursor를 성공 기록으로 덮어쓰지 않는다. 재개 가능한 중단은 기존 checkpoint와 재개 정책을 따른다.
 - 이미 합의한 범위는 단계마다 재확인하지 않고 실행·검증·주제별 한국어 Draft PR까지 진행한다. 사용자 개입은 필수 결정·인증·권한 확대에 필요한 경우로 제한하되, 기존 승인 gate와 실패·예산·사용량 중단 조건은 유지한다. 개별 작업의 명시적 실행 제한을 우선한다.
 - `main` 직접 push, PR merge, Release 생성, production 배포 금지와 Slack·UI·protocol 승인 gate를 유지한다.
 - 상위 지침과 승인 정책이 허용하는 범위에서 명시적 사용자 지침을 skill보다 우선한다. Skill 때문에 작업을 중지하거나 합의한 진행에서 벗어날 때만 해당 skill의 정확한 링크와 원문 인용으로 이유를 설명한다.
