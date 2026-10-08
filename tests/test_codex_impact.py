@@ -163,6 +163,8 @@ class CodexImpactTest(unittest.TestCase):
     def test_prompt_defines_scope_and_result_consistency(self):
         self.assertEqual(self.execute(), "VALID")
         for rule in (
+            "Write summary, evidence reasons, impact reasons and unresolved questions in Korean",
+            "Keep JSON property names, evidence IDs, impact_names entries, enum values and approval codes in the exact schema format",
             "change_required means whether SSTC needs modification",
             "SSTD CI, Release, deployment, service restart",
             "sstd_change_required means an additional SSTD change",

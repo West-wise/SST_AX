@@ -13,6 +13,15 @@ from time import monotonic
 
 sys.dont_write_bytecode = True
 
+IMPACT_LABELS = {
+    "ui_ux": "화면·사용자 경험",
+    "protocol_contract": "프로토콜·계약",
+    "dependency": "외부 의존성",
+    "android_permission": "Android 권한",
+    "destructive_action": "파괴적 작업",
+    "sstd_change_required": "추가 SSTD 변경",
+}
+
 
 def configuration(environ):
     config = {}
@@ -50,7 +59,7 @@ def approval_message(record, review=None):
             "\n위험도: " + bounded(review["risk_level"], 16) +
             "\n승인 사유: " + bounded(review["approval_reason"], 160) +
             "\n분석 요약·수정 범위: " + bounded(review["summary"], 800))
-        affected = [key + ": " + bounded(value["reason"], 230)
+        affected = [IMPACT_LABELS[key] + ": " + bounded(value["reason"], 230)
                     for key, value in review["impacts"].items()
                     if value["status"] != "ABSENT"]
         sections.append("영향:\n" + ("\n".join(affected) or "없음") +

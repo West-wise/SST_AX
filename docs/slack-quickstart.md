@@ -4,6 +4,10 @@ Python 3.10 이상, 한 Task당 한 프로세스로 승인·거절을 검증한�
 Socket Mode를 사용하므로 OCI에 공개 HTTP 수신 포트를 열 필요가 없다.
 Codex 실행·일일 보고·상시 서비스화는 이 CLI에 포함하지 않는다.
 
+새 분석의 요약·수정 범위, 영향 설명, 미해결 질문은 한국어로 요청합니다. 승인 메시지의
+영향 항목명도 한국어로 표시합니다. JSON 필드명과 승인 코드·nonce 등 검증에 사용하는
+값은 원래 형식으로 유지하고, 기존 분석·승인 snapshot은 보존합니다.
+
 ## Slack App 설정
 
 1. Socket Mode를 활성화한다. Basic Information → App-Level Tokens에서
