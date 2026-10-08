@@ -6,15 +6,25 @@ ANALYZING Task의 본문 해시를 재계산하고 stdin으로 임시 폴더에 
 
 CLI·시스템 설정·저장된 로그인은 관리자 신뢰 영역입니다. Slack/GitHub token과 Git 제어 환경은 Worker에 전달하지 않습니다. CLI 설정은 OS 권한 격리를 대신하지 않으며 세션 저장소에는 입력이 남을 수 있습니다.
 
-커밋 SHA는 입력 수집기의 Git 명령으로 확정하고, 요청 hash는 snapshot 본문에서 계산합니다. AI는 `task_id`, `source_type`, `input_context`를 응답에 작성하지 않습니다. 생성용 schema와 전달 계약에서 이 세 필드를 제외하고 추가 필드도 거부합니다. Controller는 AI 응답의 형식을 검증한 뒤 고정 manifest의 식별자를 결합하여 기존 최종 결과 schema로 전체 검증합니다. 현재 Git HEAD로 과거 입력을 다시 해석하지 않으며, 결과를 VALID로 기록하기 전에 증거 본문과 manifest를 재검증합니다.
+커밋 SHA는 입력 수집기의 Git 명령으로 확정하고, 요청 hash는 snapshot 본문에서 계산합니다. AI는 `task_id`, `source_type`, `input_context`와 영향별 `evidence_ids`를 응답에 작성하지 않습니다. 생성용 schema와 전달 계약에서 Controller가 구성하는 필드를 제외하고 추가 필드도 거부합니다. Controller는 AI 응답의 형식과 증거 선언의 유일성을 검증한 뒤 고정 manifest의 식별자와 아래 증거 연결을 결합하여 기존 최종 결과 schema로 전체 검증합니다. 현재 Git HEAD로 과거 입력을 다시 해석하지 않으며, 결과를 VALID로 기록하기 전에 증거 본문과 manifest를 재검증합니다.
 
 파싱·크기·알려진 secret 검사 후 모델 응답은 `<task-id>.analysis-N.model.json`에, 식별자를 결합한 최종 결과는 기존 `<task-id>.analysis-N.json`에 저장합니다. Task 로그의 `model_result_file`·`model_result_sha256`은 모델 응답을, 기존 `result_file`·`result_sha256`은 검증된 최종 결과를 참조합니다. AI가 식별자를 임의로 반환하면 `INVALID_RESULT`로 거부하고 모델 응답만 보존합니다. 기존 실패 결과의 SHA를 수정하거나 성공 처리하지 않습니다. 모델 응답 형식은 생성 내부 경계이며 최종 결과 계약·승인·세션·입력 해시 검증을 변경하지 않습니다.
 
 분석의 `change_required`는 SSTC 수정 필요성입니다. 위험도·영향·승인 사유는 필요한 SSTC 작업과 그 작업에 필요한 추가 SSTD 변경을 기준으로 판단합니다. 입력에 포함된 SSTD CI·Release·배포·서비스 재시작·서버 전용 dependency만으로 SSTC의 dependency·파괴적 작업·승인·위험을 선언하지 않습니다. protocol/parser/model뿐 아니라 수치·단위·범위·화면 표시의 호환성을 확인합니다. `sstd_change_required`는 이미 입력으로 주어진 SSTD 변경이 아닌, SSTC 작업을 위해 추가로 필요한 SSTD 변경입니다. 이미 변경된 SSTD 계약에 대한 SSTC 적응의 protocol 영향과 SSTC 요청으로 새 SSTD 계약을 만드는 승인 경계는 유지합니다.
 
-`result.evidence`에는 ID별로 한 항목만 선언하고 이유를 합칩니다. 각 `impact.evidence_ids` 안의 중복은 금지하지만 서로 다른 영향에서 같은 ID를 참조할 수 있습니다. `UNKNOWN` 또는 판단·승인 범위를 막는 미해결 질문이 있으면 `UNDETERMINED`이며, 이 판정에는 차단 사유를 설명하는 질문이 최소 하나 필요합니다. 비차단 운영 관찰은 summary나 증거 이유에 기록합니다. `NOT_REQUIRED`는 위험도 NONE·모든 영향 ABSENT·승인 사유 없음·질문 없음일 때만 허용합니다. 프롬프트가 이 규칙을 안내해도 기존 파서 검증을 통과해야 하며 잘못된 결과를 자동 보정하지 않습니다.
+AI 응답의 `evidence`에는 ID별로 한 항목을 선언하고 증거별 `reason`과 필수 배열 `impact_names`를 작성합니다. `impact_names`는 `ui_ux`, `protocol_contract`, `dependency`, `android_permission`, `destructive_action`, `sstd_change_required` 중 해당 증거가 뒷받침하는 영향을 중복 없이 나열합니다. 같은 항목에 여러 영향을 적을 수 있고, 전체 요약만 뒷받침하는 독립 증거는 빈 배열로 보존합니다. 예를 들어 기존 Android manifest 증거는 다음처럼 한 번 선언합니다.
 
-`INVALID_RESULT`에는 Task 로그의 `codex_analysis.validation_errors`로 고정 오류 코드와 필드 위치를 남깁니다. 원시 이벤트·stderr는 저장하지 않으며 기존 분석 JSON·실패 상태·checkpoint는 보존합니다. OCI Task `sstd-sync-20261008-0001`은 사용자 제공 검증 출력에서 입력 완전성·증거 ID 중복·판정 모순을, `sstd-sync-20261008-0002`는 같은 입력의 재분석에서 39자리 잘못된 SSTD SHA 출력을 확인했습니다. OCI 원본 파일은 로컬에서 직접 읽지 않았습니다. 두 Task의 실패 기록을 수정하거나 자동 재개하지 않습니다. 교정 후 OCI 확인은 운영자가 별도 새 Task로 실행합니다. 로컬 합성 회귀 통과를 실제 AI 판단·SSTC 후보 Actions·두 입력의 Draft PR 완주 또는 1차 완료로 기록하지 않습니다. 기존 [완료 검증 기준](original-goal-audit-20261006.md)과 [의미 평가](impact-analysis.md#의미-평가)를 유지합니다.
+```json
+{"evidence_id":"e0013","reason":"현재 Android permission 구성을 확인했다.","impact_names":["android_permission"]}
+```
+
+Controller는 선언 순서대로 각 영향의 `evidence_ids`를 구성하고, 최종 `evidence`에는 원래 ID와 설명을 보존하며 `impact_names`를 제외합니다. AI가 작성한 영향의 상태·이유와 결론·위험도·승인 사유·질문은 그대로 둡니다. 선언되지 않은 증거를 추가하거나 다른 증거를 빈 영향에 배정하지 않습니다. 미등록 ID·중복 선언·중복 또는 알 수 없는 영향명·누락된 배열·AI가 반환한 `evidence_ids`는 거부합니다. 확정 결과의 모든 영향에 근거가 있어야 한다는 기존 검증도 유지합니다. 최종 결과 계약과 기존 VALID 분석의 재검증 형식은 바뀌지 않습니다.
+
+`UNKNOWN` 또는 판단·승인 범위를 막는 미해결 질문이 있으면 `UNDETERMINED`이며, 이 판정에는 차단 사유를 설명하는 질문이 최소 하나 필요합니다. 비차단 운영 관찰은 summary나 증거 이유에 기록합니다. `NOT_REQUIRED`는 위험도 NONE·모든 영향 ABSENT·승인 사유 없음·질문 없음일 때만 허용합니다. 프롬프트가 이 규칙을 안내해도 기존 파서 검증을 통과해야 하며 잘못된 결과를 자동 보정하지 않습니다.
+
+`INVALID_RESULT`에는 Task 로그의 `codex_analysis.validation_errors`로 고정 오류 코드와 필드 위치를 남깁니다. 원시 이벤트·stderr는 저장하지 않으며 기존 분석 JSON·실패 상태·checkpoint는 보존합니다. OCI Task `sstd-sync-20261008-0001`은 증거 ID 중복·판정 모순으로, `sstd-sync-20261008-0002`는 같은 입력의 재분석에서 39자리 잘못된 SSTD SHA 출력으로 실패했습니다. 두 Task의 최초 교정은 사용자 제공 검증 출력에 근거했습니다. 이후 보존된 acceptance 산출물에서 `sstd-sync-20261008-0003`의 식별자 결합·모델 응답 해시는 정상이나 `android_permission`이 참조한 `e0013`의 전체 증거 선언 누락으로 실패한 것을 확인했습니다. 해당 증거의 본문 hash와 `missing=false`, `truncated=false`는 정상이므로 수집 누락을 원인으로 처리하지 않습니다. 세 Task의 실패 기록을 수정하거나 자동 재개하지 않습니다.
+
+교정 후 OCI 확인은 운영자가 같은 SSTD base/head와 SSTC revision, 증거 ID·본문 hash를 유지한 별도 새 Task로 실행합니다. 로컬 합성 회귀 통과와 실제 AI 완료 증거는 구분합니다. 이번 무영향 입력의 종료 기준은 새 실제 분석의 `VALID`와 정책 재검증에 따른 `COMPLETED / VERIFIED_NO_CLIENT_IMPACT` 기록입니다. 적합한 `UNDETERMINED`는 VALID일 수 있어도 완료로 취급하지 않습니다. 기존 실패 기록과 Controller cursor를 보존하며, 이후 두 입력의 전체 경로는 기존 [완료 검증 기준](original-goal-audit-20261006.md)과 [의미 평가](impact-analysis.md#의미-평가)를 따릅니다.
 
 ```bash
 python3 -B scripts/run_codex_impact.py \

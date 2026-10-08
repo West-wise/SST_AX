@@ -147,10 +147,11 @@ class ControllerTest(unittest.TestCase):
                                              and decision == "REQUIRED" and "protocol_contract" not in present else ())
             result = {"schema_version": "1.0",
                       "change_required": decision, "summary": "Reviewed fixed source and all Android consumers",
-                      "risk_level": risk, "evidence": [{"evidence_id": value, "reason": "Read fixed bytes"} for value in ids],
+                      "risk_level": risk, "evidence": [{"evidence_id": value, "reason": "Read fixed bytes",
+                                                          "impact_names": list(keys)} for value in ids],
                       "impacts": {key: {"status": "UNKNOWN" if decision == "UNDETERMINED" else
                                                    "PRESENT" if key in present_keys else "ABSENT",
-                                        "reason": "Reviewed fixed consumer relationship", "evidence_ids": ids} for key in keys},
+                                        "reason": "Reviewed fixed consumer relationship"} for key in keys},
                       "approval_reasons": [reasons[key] for key in present_keys] + (["HIGH_RISK"] if risk == "HIGH" else []),
                       "unresolved_questions": ["Clarify source units"] if decision == "UNDETERMINED" else []}
             events = [{"type": "thread.started", "thread_id": SESSION},

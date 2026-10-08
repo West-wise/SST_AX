@@ -118,6 +118,51 @@ def output_schema(schema: dict) -> dict:
     return result
 
 
+def model_schema(schema: dict) -> dict:
+    """Give the model one evidence declaration, keeping the final contract intact."""
+    result = copy.deepcopy(schema)
+    for name in ("task_id", "source_type", "input_context"):
+        del result["properties"][name]
+        result["required"].remove(name)
+    impact = result["$defs"]["impact"]
+    del impact["properties"]["evidence_ids"]
+    impact["required"].remove("evidence_ids")
+    names = list(result["properties"]["impacts"]["properties"])
+    item = result["properties"]["evidence"]["items"]
+    item["required"].append("impact_names")
+    item["properties"]["impact_names"] = {
+        "type": "array", "items": {"type": "string", "enum": names},
+        "minItems": 0, "maxItems": len(names), "uniqueItems": True,
+    }
+    return result
+
+
+def validate_model_result(value: object, schema: dict) -> list[str]:
+    """Reject ambiguous declarations before constructing any final references."""
+    errors = validate_shape(value, schema, schema, "result")
+    if errors:
+        return errors
+    declared = set()
+    for index, item in enumerate(value["evidence"]):
+        if item["evidence_id"] in declared:
+            errors.append(f"DUPLICATE_EVIDENCE: result.evidence[{index}]")
+        declared.add(item["evidence_id"])
+    return errors
+
+
+def bind_model_result(model: dict, manifest: dict) -> dict:
+    """Project validated declarations without inferring evidence or changing judgments."""
+    result = copy.deepcopy(model)
+    for name in ("task_id", "source_type", "input_context"):
+        result[name] = copy.deepcopy(manifest[name])
+    result["evidence"] = [{"evidence_id": item["evidence_id"], "reason": item["reason"]}
+                          for item in model["evidence"]]
+    for name, impact in result["impacts"].items():
+        impact["evidence_ids"] = [item["evidence_id"] for item in model["evidence"]
+                                  if name in item["impact_names"]]
+    return result
+
+
 def command(executable: str, schema: Path, session_id: str | None) -> list[str]:
     args = [executable, "exec", "--sandbox", "read-only", "--ignore-user-config",
             "--ignore-rules", "--skip-git-repo-check", "--json",
@@ -433,10 +478,7 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                     budget.finish("INTERRUPTED")
                     raise
                 schema_path = cwd / "schema.json"
-                analysis_schema = load_document(SCHEMA_PATH)
-                for name in ("task_id", "source_type", "input_context"):
-                    del analysis_schema["properties"][name]
-                    analysis_schema["required"].remove(name)
+                analysis_schema = model_schema(load_document(SCHEMA_PATH))
                 atomic_json(schema_path, output_schema(analysis_schema))
                 args = command(executable, schema_path, session)
                 prompt = (
@@ -457,8 +499,11 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                     "source_type or input_context. The Controller supplies these from the verified manifest, "
                     "including Git-resolved revisions and the request snapshot hash. "
                     "Each evidence_id may appear only once in result.evidence; combine its reasons there. "
-                    "References must be declared in result.evidence and unique within each impact.evidence_ids. "
-                    "The same ID may support multiple impacts. Every impact in a definite result needs evidence. "
+                    "Each evidence item requires impact_names: a unique list of the impacts it supports. "
+                    "The same evidence item may support multiple impacts. Use impact_names=[] for evidence "
+                    "that supports only the overall summary. Do not return impact.evidence_ids; the Controller "
+                    "constructs those references from your evidence declarations, without adding evidence. "
+                    "Every impact in a definite result needs at least one supporting evidence declaration. "
                     "Missing/truncated required evidence or missing required input context requires UNDETERMINED. "
                     "Any UNKNOWN impact or any unresolved question requires change_required=UNDETERMINED. "
                     "UNDETERMINED requires at least one unresolved question identifying what blocks the decision. "
@@ -525,11 +570,9 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                         entry["artifact_paths"].append(model_file.name)
                         record.update(model_result_file=model_file.name,
                                       model_result_sha256=digest(model_result))
-                        validation_errors = validate_shape(model_result, analysis_schema, analysis_schema, "result")
+                        validation_errors = validate_model_result(model_result, analysis_schema)
                         if not validation_errors:
-                            result = {**model_result, "task_id": manifest["task_id"],
-                                      "source_type": manifest["source_type"],
-                                      "input_context": copy.deepcopy(manifest["input_context"])}
+                            result = bind_model_result(model_result, manifest)
                             encoded = canonical(result)
                             if len(encoded) > MAX_TOTAL_BYTES:
                                 raise ValueError("RESULT_SIZE")
