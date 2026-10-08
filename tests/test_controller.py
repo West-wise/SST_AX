@@ -145,8 +145,7 @@ class ControllerTest(unittest.TestCase):
             reasons = {"ui_ux": "UI_CHANGE", "protocol_contract": "PROTOCOL_CHANGE"}
             present_keys = tuple(present) + (("protocol_contract",) if manifest["source_type"] == "SSTD_CHANGE"
                                              and decision == "REQUIRED" and "protocol_contract" not in present else ())
-            result = {"schema_version": "1.0", "task_id": manifest["task_id"],
-                      "source_type": manifest["source_type"], "input_context": manifest["input_context"],
+            result = {"schema_version": "1.0",
                       "change_required": decision, "summary": "Reviewed fixed source and all Android consumers",
                       "risk_level": risk, "evidence": [{"evidence_id": value, "reason": "Read fixed bytes"} for value in ids],
                       "impacts": {key: {"status": "UNKNOWN" if decision == "UNDETERMINED" else

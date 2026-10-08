@@ -117,8 +117,10 @@ class ExecutionPolicyTest(unittest.TestCase):
         storage.save_pair(self.path, state, log)
         def analyze(args, prompt, cwd, on_session, **kwargs):
             on_session(fixture.SESSION)
+            response = {key: value for key, value in self.f.result.items()
+                        if key not in ("task_id", "source_type", "input_context")}
             events = [{"type": "thread.started", "thread_id": fixture.SESSION},
-                      {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(self.f.result)}},
+                      {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(response)}},
                       {"type": "turn.completed"}]
             return 0, b"\n".join(analyzer.canonical(value) for value in events), None
         with patch.object(analyzer, "preflight"), patch.object(analyzer, "invoke", side_effect=analyze):

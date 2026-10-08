@@ -6,14 +6,18 @@ ANALYZING Task의 본문 해시를 재계산하고 stdin으로 임시 폴더에 
 
 CLI·시스템 설정·저장된 로그인은 관리자 신뢰 영역입니다. Slack/GitHub token과 Git 제어 환경은 Worker에 전달하지 않습니다. CLI 설정은 OS 권한 격리를 대신하지 않으며 세션 저장소에는 입력이 남을 수 있습니다.
 
+커밋 SHA는 입력 수집기의 Git 명령으로 확정하고, 요청 hash는 snapshot 본문에서 계산합니다. AI는 `task_id`, `source_type`, `input_context`를 응답에 작성하지 않습니다. 생성용 schema와 전달 계약에서 이 세 필드를 제외하고 추가 필드도 거부합니다. Controller는 AI 응답의 형식을 검증한 뒤 고정 manifest의 식별자를 결합하여 기존 최종 결과 schema로 전체 검증합니다. 현재 Git HEAD로 과거 입력을 다시 해석하지 않으며, 결과를 VALID로 기록하기 전에 증거 본문과 manifest를 재검증합니다.
+
+파싱·크기·알려진 secret 검사 후 모델 응답은 `<task-id>.analysis-N.model.json`에, 식별자를 결합한 최종 결과는 기존 `<task-id>.analysis-N.json`에 저장합니다. Task 로그의 `model_result_file`·`model_result_sha256`은 모델 응답을, 기존 `result_file`·`result_sha256`은 검증된 최종 결과를 참조합니다. AI가 식별자를 임의로 반환하면 `INVALID_RESULT`로 거부하고 모델 응답만 보존합니다. 기존 실패 결과의 SHA를 수정하거나 성공 처리하지 않습니다. 모델 응답 형식은 생성 내부 경계이며 최종 결과 계약·승인·세션·입력 해시 검증을 변경하지 않습니다.
+
 분석의 `change_required`는 SSTC 수정 필요성입니다. 위험도·영향·승인 사유는 필요한 SSTC 작업과 그 작업에 필요한 추가 SSTD 변경을 기준으로 판단합니다. 입력에 포함된 SSTD CI·Release·배포·서비스 재시작·서버 전용 dependency만으로 SSTC의 dependency·파괴적 작업·승인·위험을 선언하지 않습니다. protocol/parser/model뿐 아니라 수치·단위·범위·화면 표시의 호환성을 확인합니다. `sstd_change_required`는 이미 입력으로 주어진 SSTD 변경이 아닌, SSTC 작업을 위해 추가로 필요한 SSTD 변경입니다. 이미 변경된 SSTD 계약에 대한 SSTC 적응의 protocol 영향과 SSTC 요청으로 새 SSTD 계약을 만드는 승인 경계는 유지합니다.
 
 `result.evidence`에는 ID별로 한 항목만 선언하고 이유를 합칩니다. 각 `impact.evidence_ids` 안의 중복은 금지하지만 서로 다른 영향에서 같은 ID를 참조할 수 있습니다. `UNKNOWN` 또는 판단·승인 범위를 막는 미해결 질문이 있으면 `UNDETERMINED`이며, 이 판정에는 차단 사유를 설명하는 질문이 최소 하나 필요합니다. 비차단 운영 관찰은 summary나 증거 이유에 기록합니다. `NOT_REQUIRED`는 위험도 NONE·모든 영향 ABSENT·승인 사유 없음·질문 없음일 때만 허용합니다. 프롬프트가 이 규칙을 안내해도 기존 파서 검증을 통과해야 하며 잘못된 결과를 자동 보정하지 않습니다.
 
-`INVALID_RESULT`에는 Task 로그의 `codex_analysis.validation_errors`로 고정 오류 코드와 필드 위치를 남깁니다. 원시 이벤트·stderr는 저장하지 않으며 기존 분석 JSON·실패 상태·checkpoint는 보존합니다. OCI Task `sstd-sync-20261008-0001`의 입력 완전성과 실패 원인은 사용자 제공 사실이며, 로컬에서 원본을 재검증하지 않았습니다. 이 Task의 실패 기록을 수정하거나 자동 재개하지 않습니다. 교정 후 OCI 확인은 운영자가 별도 새 Task로 실행합니다. 로컬 합성 회귀 통과를 실제 AI 판단·SSTC 후보 Actions·두 입력의 Draft PR 완주 또는 1차 완료로 기록하지 않습니다. 기존 [완료 검증 기준](original-goal-audit-20261006.md)과 [의미 평가](impact-analysis.md#의미-평가)를 유지합니다.
+`INVALID_RESULT`에는 Task 로그의 `codex_analysis.validation_errors`로 고정 오류 코드와 필드 위치를 남깁니다. 원시 이벤트·stderr는 저장하지 않으며 기존 분석 JSON·실패 상태·checkpoint는 보존합니다. OCI Task `sstd-sync-20261008-0001`은 사용자 제공 검증 출력에서 입력 완전성·증거 ID 중복·판정 모순을, `sstd-sync-20261008-0002`는 같은 입력의 재분석에서 39자리 잘못된 SSTD SHA 출력을 확인했습니다. OCI 원본 파일은 로컬에서 직접 읽지 않았습니다. 두 Task의 실패 기록을 수정하거나 자동 재개하지 않습니다. 교정 후 OCI 확인은 운영자가 별도 새 Task로 실행합니다. 로컬 합성 회귀 통과를 실제 AI 판단·SSTC 후보 Actions·두 입력의 Draft PR 완주 또는 1차 완료로 기록하지 않습니다. 기존 [완료 검증 기준](original-goal-audit-20261006.md)과 [의미 평가](impact-analysis.md#의미-평가)를 유지합니다.
 
 ```bash
-python -B scripts/run_codex_impact.py \
+python3 -B scripts/run_codex_impact.py \
   --task-file state/tasks/<task-id>.json \
   --input-directory state/tasks/<task-id>.inputs
 ```
@@ -27,7 +31,7 @@ immutable 실행 근거와 mutable 실행 checkpoint를 분리하여 로그 추�
 분석 1회는 최대 10분, 이벤트 총 8 MiB·한 줄 1 MiB이며 Task 누적 예산도 적용합니다. 원시 JSONL·stderr를 저장하지 않습니다. 누락·잘림·UNKNOWN·질문은 확정 판단을 막고 사용량 제한은 DEFERRED_RATE_LIMIT입니다. 계정에서 확인한 실제 reset 시각을 기록한 뒤 그 시각 이후에만 재개합니다.
 
 ```bash
-python -B scripts/update_task_state.py --task-file state/tasks/<task-id>.json \
+python3 -B scripts/update_task_state.py --task-file state/tasks/<task-id>.json \
   --record-reset-at '<실제로 확인한 ISO-8601 시각과 시간대>'
 ```
 
@@ -46,7 +50,7 @@ python -B scripts/update_task_state.py --task-file state/tasks/<task-id>.json \
 Task pair와 분석 checkpoint는 하나의 pending journal로 저장합니다. 저장 중단은 먼저 `update_task_state.py --recover`로 복구합니다. 분석 도중 프로세스가 죽은 경우에는 기록된 PID의 종료와 실제 누적 실행량을 확인해야 합니다. 아래 명령은 Codex를 실행하지 않으며, 복구 후 일반 분석 명령을 별도로 실행합니다.
 
 ```bash
-python -B scripts/run_codex_impact.py --task-file "$TASK_FILE" --input-directory "$INPUT_DIR" \
+python3 -B scripts/run_codex_impact.py --task-file "$TASK_FILE" --input-directory "$INPUT_DIR" \
   --reconcile-interrupted --observed-active-seconds "$OBSERVED_ACTIVE_SECONDS" \
   --observed-write-steps "$OBSERVED_WRITE_STEPS"
 ```
