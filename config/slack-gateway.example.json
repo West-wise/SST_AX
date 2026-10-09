@@ -1,0 +1,6 @@
+{
+  "socket_path": "/run/sst-ax-slack/gateway.sock",
+  "tasks_directory": "/var/lib/sst_ax/tasks",
+  "reports_directory": "/var/lib/sst-ax-slack/reports",
+  "client_uid": 1002
+}

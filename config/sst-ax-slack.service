@@ -1,0 +1,39 @@
+[Unit]
+Description=SST-AX isolated Slack approvals and daily reports
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=sst-ax-slack
+Group=sst-ax-bridge
+SupplementaryGroups=sst-ax-state
+WorkingDirectory=/opt/sst_ax
+ExecStart=/opt/sst_ax/venv/bin/python3 -B /opt/sst_ax/scripts/run_slack_gateway.py --config /etc/sst_ax/slack-gateway.json
+LoadCredential=slack.env:/etc/sst_ax/.env
+RuntimeDirectory=sst-ax-slack
+RuntimeDirectoryMode=0750
+StateDirectory=sst-ax-slack
+StateDirectoryMode=0700
+UMask=0007
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/sst_ax
+# For a pre-existing state directory in /home, the operator must add its exact
+# path as a drop-in and grant only that service's state/traversal access.
+UnsetEnvironment=SLACK_BOT_TOKEN SLACK_APP_TOKEN PYTHONPATH PYTHONHOME
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

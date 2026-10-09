@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -53,7 +54,16 @@ def atomic_json(path: Path, value: dict) -> None:
     descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=".task-")
     temporary = Path(name)
     try:
+        # Explicitly shared Controller/Gateway state directories have setgid.
+        # Publish the group-readable/writable mode before atomic replacement;
+        # private directories retain mkstemp's 0600 default. No secret store uses
+        # this helper, and an other-writable directory is never a shared store.
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            directory = path.parent.stat()
+            if directory.st_mode & stat.S_ISGID:
+                if directory.st_mode & 0o007:
+                    raise ValueError("SHARED_STATE_DIRECTORY_MUST_BE_PRIVATE")
+                os.fchmod(stream.fileno(), 0o660 if directory.st_mode & 0o020 else 0o640)
             json.dump(value, stream, indent=2)
             stream.write("\n")
             stream.flush()

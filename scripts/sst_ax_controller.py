@@ -23,10 +23,12 @@ ANALYSIS_ENVIRONMENT_ERRORS = {"EXECUTABLE_NOT_FOUND", "EXECUTABLE_UNAVAILABLE",
 
 def configuration(path: Path) -> dict:
     config = load_document(path)
-    allowed = {"sstd_repository", "sstc_repository", "state_directory", "worktree_directory",
-               "poll_seconds", "bootstrap_sstd_base"}
-    require(isinstance(config, dict) and set(config) <= allowed and
-            allowed <= set(config), "CONTROLLER_CONFIGURATION_REQUIRED")
+    required = {"sstd_repository", "sstc_repository", "state_directory", "worktree_directory",
+                "poll_seconds", "bootstrap_sstd_base"}
+    bridge = {"slack_gateway_socket", "slack_gateway_uid"}
+    require(isinstance(config, dict) and set(config) <= required | bridge and
+            required <= set(config) and (set(config) & bridge in (set(), bridge)),
+            "CONTROLLER_CONFIGURATION_REQUIRED")
     check_content(canonical(config))
     require(type(config["poll_seconds"]) is int and 15 <= config["poll_seconds"] <= 3600,
             "POLL_INTERVAL_REFUSED")
@@ -34,6 +36,10 @@ def configuration(path: Path) -> dict:
         value = config[key]
         require(isinstance(value, str) and Path(value).is_absolute(), "ABSOLUTE_CONTROLLER_PATH_REQUIRED")
         config[key] = Path(value)
+    if "slack_gateway_socket" in config:
+        from slack_gateway_client import Gateway
+        config["slack_gateway_socket"] = Path(config["slack_gateway_socket"])
+        Gateway(config["slack_gateway_socket"], config["slack_gateway_uid"])
     bootstrap = config.get("bootstrap_sstd_base")
     require(bootstrap == "ROOT" or
             isinstance(bootstrap, str) and SHA.fullmatch(bootstrap), "BOOTSTRAP_REVISION_REFUSED")
@@ -299,9 +305,13 @@ def run_once(config: dict, client=None, approval=None) -> dict:
             nonlocal approval
             try:
                 if approval is None:
-                    import os
-                    from slack_runner import configuration as slack_configuration, listen_many
-                    approval = lambda paths: listen_many(paths, slack_configuration(os.environ), timeout_seconds=5)
+                    if "slack_gateway_socket" in config:
+                        from slack_gateway_client import Gateway
+                        approval = Gateway(config["slack_gateway_socket"], config["slack_gateway_uid"]).poll
+                    else:
+                        import os
+                        from slack_runner import configuration as slack_configuration, listen_many
+                        approval = lambda paths: listen_many(paths, slack_configuration(os.environ), timeout_seconds=5)
                 require(approval(pending) == 0, "SLACK_PENDING_TRANSPORT_FAILED")
             except Exception:
                 journal["approval_error"] = "SLACK_CONFIGURATION_OR_TRANSPORT_REQUIRED"
