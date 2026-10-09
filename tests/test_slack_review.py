@@ -40,6 +40,36 @@ class ApprovalReviewTest(unittest.TestCase):
         self.assertTrue(all(block["text"]["type"] == "plain_text"
                             for block in message["blocks"] if block["type"] == "section"))
 
+    def test_korean_impact_labels_preserve_review_and_approval_buttons(self):
+        review = approval.approval_review(self.fixture.path, self.request)
+        review["summary"] = "기기별 안전 영역을 반영해 상단 UI 가림을 수정한다."
+        labels = {
+            "ui_ux": "화면·사용자 경험",
+            "protocol_contract": "프로토콜·계약",
+            "dependency": "외부 의존성",
+            "android_permission": "Android 권한",
+            "destructive_action": "파괴적 작업",
+            "sstd_change_required": "추가 SSTD 변경",
+        }
+        for key, impact in review["impacts"].items():
+            impact.update(status="UNKNOWN" if key == "protocol_contract" else "PRESENT",
+                          reason="검증된 근거를 확인했다.")
+        before_review, before_request = copy.deepcopy(review), copy.deepcopy(self.request)
+        message = runner.approval_message(self.request, review)
+        sections = "\n".join(block["text"]["text"] for block in message["blocks"]
+                             if block["type"] == "section")
+        self.assertIn(review["summary"], sections)
+        for key, label in labels.items():
+            with self.subTest(impact=key):
+                self.assertIn(label + ": 검증된 근거를 확인했다.", sections)
+                self.assertNotIn(key + ":", sections)
+        self.assertEqual(review, before_review)
+        self.assertEqual(self.request, before_request)
+        self.assertEqual([(button["action_id"], button["value"])
+                          for button in message["blocks"][-1]["elements"]],
+                         [("ax_approve", self.request["nonce"]),
+                          ("ax_reject", self.request["nonce"])])
+
     def test_modified_result_or_evidence_cannot_be_sent_for_approval(self):
         fixture = self.fixture
         _, log = fixture.pair()

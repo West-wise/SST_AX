@@ -2,6 +2,8 @@
 
 Controller는 [고정 입력](impact-inputs.md)을 Codex에 전달하고 [결과 검증](impact-analysis.md)으로 구조·근거·입력 결합을 검사합니다. 분석 성공은 실행 허가가 아닙니다.
 
+새 분석의 요약(`summary`), 증거·영향의 설명(`reason`), 미해결 질문(`unresolved_questions`)은 한국어로 작성하도록 요청합니다. JSON 필드명·증거 ID·영향명·enum·승인 코드는 schema의 형식으로 유지합니다. 언어 지침은 새 분석에 적용하며, 보관된 분석과 승인 snapshot은 원래 해시와 함께 보존합니다.
+
 ANALYZING Task의 본문 해시를 재계산하고 stdin으로 임시 폴더에 전달합니다. `codex exec --sandbox read-only --json`과 output schema를 사용합니다. 사용자 config·execpolicy rules, shell·apps·plugins·web 도구를 제외합니다. `--ignore-rules`를 AGENTS 문서 무효화와 동일시하지 않습니다. 입력·저장소 텍스트는 분석 자료이며 AX 권한을 확대할 수 없습니다.
 
 CLI·시스템 설정·저장된 로그인은 관리자 신뢰 영역입니다. Slack/GitHub token과 Git 제어 환경은 Worker에 전달하지 않습니다. CLI 설정은 OS 권한 격리를 대신하지 않으며 세션 저장소에는 입력이 남을 수 있습니다.
