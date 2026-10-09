@@ -43,4 +43,11 @@ SSTD replay는 base `fbc06c1f4aa96582a4967b4541f0e5864fc248e5`, head `08f917cf85
 3. 실제 기기 UI: Dashboard·ServerDetail·Splash·QR overlay의 세로/가로 방향, status bar·컷아웃·중복 여백·카메라 preview를 확인합니다. 해당 Actions artifact는 검증 receipt만 보관하며 설치용 APK는 제공하지 않습니다. `assembleDebug` 성공을 기기 확인 완료로 집계하지 않습니다.
 4. 운영 계정 격리·장시간 운용: 별도 Controller/Worker 권한과 안정적인 반복 운용의 실제 증거를 확인합니다. 관리형 에이전트 sandbox의 쓰기 차단이나 로컬 테스트로 운영 OS 격리를 입증하지 않습니다.
 
-자동화의 종료 지점은 [Task 상태 규약](task-state.md)의 `READY_FOR_REVIEW` 또는 수정 불필요 `COMPLETED`입니다. main push·PR merge·Release·운영 배포는 수행하지 않았으며, 사람의 review·merge·배포 절차는 별도로 진행합니다. 수용 기준은 [원래 목표 감사](original-goal-audit-20261006.md)의 종료 조건과 함께 확인합니다.
+## 전체 제품 기획의 미구현 기능
+
+위 수용 기준은 자동 수정 경로의 1차 검증 목록입니다. [초기 계획](../SST_AX_Codex_CLI_Architecture_Plan.md)의 확정 결정·로드맵에는 Slack 일일 변경 보고와 독립 SSTC 요청도 포함돼 있습니다. 전체 제품의 미완료 기능에 다음 두 항목을 함께 기록합니다.
+
+1. **Slack 일일 변경 리포트:** 당일 SSTD/SSTC 변경과 자동화 처리·검증·Draft PR·실패·승인 대기를 한국어로 집계합니다. [보고 Contract](repository-contract.md)의 날짜·timezone·집계 범위와 중복 방지, 전송 실패 기록을 연결해야 합니다. 현재 generator·보고 schema·template·예약 전송은 미구현입니다. 발송 시각·대상 채널은 정한 뒤 실제 게시와 중복 방지를 검증합니다.
+2. **Slack 개인 요청 접수:** 사용자가 Slack에서 독립 SSTC 기능·UI·버그 요청을 제출하고, 고정 요청 snapshot을 SSTC Feature Handler의 공통 Task 흐름으로 연결합니다. 현재 입력은 GitHub `[AX]` Issue이며 Slack Gateway는 승인·거절만 처리합니다. 독립 요청 기능은 원래 기획에 포함됐고, Slack을 접수 채널로 사용하는 요구는 2026-10-09 사용자 설명으로 명확해졌습니다. 실제 접수·중복 방지·기존 승인 gate·검증·Draft PR 연결을 확인해야 합니다.
+
+자동화의 종료 지점은 [Task 상태 규약](task-state.md)의 `READY_FOR_REVIEW` 또는 수정 불필요 `COMPLETED`입니다. 이 기록의 검증 과정에서 AI는 main push·PR merge·Release·운영 배포를 수행하지 않았으며, 사람의 review·merge·배포 절차는 별도로 진행합니다. 수용 기준은 [원래 목표 감사](original-goal-audit-20261006.md)의 종료 조건과 전체 제품 기능 목록을 함께 확인합니다.

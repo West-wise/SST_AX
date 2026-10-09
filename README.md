@@ -30,6 +30,18 @@ SSTD 내부 변경에 SSTC 영향이 없으면 PR을 만들지 않습니다. 계
 - Worker는 SSTC 작업 공간을 수정하고, Controller가 후보 게시·Actions·Draft PR을 처리합니다. 현재 후보 범위 밖의 dependency·permission 변경은 승인만으로 허용 범위를 넓히지 않습니다.
 - AI의 main push·PR merge·Release·운영 배포는 금지합니다. 사람은 코드 review·merge와 실제 기기 UI 확인, Release·배포를 수행합니다.
 
+## Slack 제품 범위와 구현 상태
+
+원래 기획은 Slack 승인과 일일 변경 리포트, SSTD 변경과 독립적인 SSTC 기능 요청을 포함합니다. 개인 요청의 접수 채널은 사용자의 2026-10-09 요구에 따라 Slack으로 명확히 합니다. 전체 제품의 완료 보고에 다음 기능의 구현 상태도 포함합니다.
+
+| 기능 | 현재 상태 |
+|---|---|
+| Slack 승인·거절 | 실제 메시지와 결정·실행 gate 확인 |
+| Slack 일일 변경 리포트 | 미구현. 당일 변경·자동화 처리·검증·PR·실패·승인 대기 집계와 예약 전송 필요 |
+| Slack 개인 요청 접수 | 미구현. 독립 SSTC 요청은 현재 GitHub `[AX]` Issue로 접수하며, Slack 입력 → SSTC Feature Handler → 공통 Task 연결 필요 |
+
+일일 보고는 [초기 계획의 확정 결정·로드맵](SST_AX_Codex_CLI_Architecture_Plan.md), 독립 기능 요청과 보고 집계 항목은 [저장소 Contract](docs/repository-contract.md)에 명시돼 있습니다. Slack에서 받은 요청도 기존 분석·승인·검증·Draft PR 정책을 따릅니다.
+
 ## 검증 상태
 
 로컬 회귀 테스트는 임시 Git·저장 복구와 가짜 Codex/GitHub/Slack 응답을 사용합니다. 결과 형식 검증, 사람이 정한 의미 평가 사례, SSTC 패킷·단위 테스트는 각각 다른 오류를 찾습니다. 컴파일이나 JSON 성공은 실제 AI 판단 정확도를 보장하지 않습니다.
@@ -51,4 +63,4 @@ SSTD 내부 변경에 SSTC 영향이 없으면 PR을 만들지 않습니다. 계
 - [원래 목표에 대한 감사와 교정](docs/original-goal-audit-20261006.md)
 - [1차 검증 현황과 남은 항목](docs/acceptance-20261009.md)
 
-`contracts/`는 입력·결과 계약, `policies/`는 실행 권한, `scripts/`는 실행기, `state/`는 로컬 상태, `tests/`는 회귀·평가 사례입니다. 실제 상태와 인증정보는 commit하지 않습니다. Slack 일일 보고·운영 지표는 기본 완료 조건과 분리합니다. [초기 전체 계획](SST_AX_Codex_CLI_Architecture_Plan.md)은 구상 기록이며 현재 동작은 코드와 위 문서를 기준으로 합니다.
+`contracts/`는 입력·결과 계약, `policies/`는 실행 권한, `scripts/`는 실행기, `state/`는 로컬 상태, `tests/`는 회귀·평가 사례입니다. 실제 상태와 인증정보는 commit하지 않습니다. Slack 일일 리포트와 개인 요청 접수는 위 구현 현황에서 추적합니다. [초기 전체 계획](SST_AX_Codex_CLI_Architecture_Plan.md)은 구상 기록이며 현재 동작은 코드와 위 문서를 기준으로 합니다.
