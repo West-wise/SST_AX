@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://west-wise.github.io/sst-ax/schemas/daily-report.schema.json",
+  "title": "SST-AX Korean daily report safe projection",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "report_date", "timezone", "period_start", "period_end", "source_types", "counts", "items"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "report_date": {"type": "string", "format": "date"},
+    "timezone": {"const": "Asia/Seoul"},
+    "period_start": {"type": "string", "format": "date-time"},
+    "period_end": {"type": "string", "format": "date-time"},
+    "source_types": {
+      "type": "object", "additionalProperties": false, "required": ["SSTD_CHANGE", "SSTC_FEATURE"],
+      "properties": {"SSTD_CHANGE": {"type": "integer", "minimum": 0}, "SSTC_FEATURE": {"type": "integer", "minimum": 0}}
+    },
+    "counts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["daily_tasks", "backlog_tasks", "invalid_records", "analysis_valid", "actions_verified", "draft_pr_verified"],
+      "properties": {
+        "daily_tasks": {"type": "integer", "minimum": 0},
+        "backlog_tasks": {"type": "integer", "minimum": 0},
+        "invalid_records": {"type": "integer", "minimum": 0},
+        "analysis_valid": {"type": "integer", "minimum": 0},
+        "actions_verified": {"type": "integer", "minimum": 0},
+        "draft_pr_verified": {"type": "integer", "minimum": 0}
+      }
+    },
+    "items": {
+      "type": "array", "maxItems": 40,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["task_id", "source_type", "status", "risk_level", "activity", "backlog", "validation", "candidate_sha", "draft_pr_url", "error"],
+        "properties": {
+          "task_id": {"type": "string", "pattern": "^(sstd-sync|sstc-feature)-[0-9]{8}-[0-9]{4}$"},
+          "source_type": {"enum": ["SSTD_CHANGE", "SSTC_FEATURE"]},
+          "status": {"enum": ["RECEIVED", "ANALYZING", "WAITING_APPROVAL", "IMPLEMENTING", "VALIDATING", "READY_FOR_REVIEW", "COMPLETED", "REJECTED", "DEFERRED_RATE_LIMIT", "ANALYSIS_FAILED", "IMPLEMENTATION_FAILED", "BUILD_FAILED", "TEST_FAILED", "SECURITY_REVIEW_FAILED", "PROTOCOL_APPROVAL_REQUIRED", "UNKNOWN"]},
+          "risk_level": {"enum": ["NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"]},
+          "activity": {"type": "array", "uniqueItems": true, "items": {"enum": ["CREATED", "TRANSITION", "COMMAND"]}},
+          "backlog": {"enum": ["NONE", "WAITING_APPROVAL", "DEFERRED_RATE_LIMIT", "FAILED"]},
+          "validation": {
+            "type": "object", "additionalProperties": false, "required": ["analysis", "actions", "draft_pr"],
+            "properties": {
+              "analysis": {"enum": ["UNVERIFIED", "VALID", "INVALID"]},
+              "actions": {"enum": ["UNVERIFIED", "RECEIPT_VERIFIED", "INVALID"]},
+              "draft_pr": {"enum": ["UNVERIFIED", "RECEIPT_VERIFIED", "INVALID"]}
+            }
+          },
+          "candidate_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+          "draft_pr_url": {"type": ["string", "null"], "pattern": "^https://github\\.com/West-wise/Server_State_Telemetry_Client/pull/[1-9][0-9]*$"},
+          "error": {"enum": [null, "INVALID_TASK_RECORD", "INVALID_ANALYSIS_PROOF", "INVALID_PIPELINE_PROOF"]}
+        }
+      }
+    }
+  }
+}
