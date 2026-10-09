@@ -73,13 +73,22 @@ manifest는 로컬 파일을 수정할 수 있는 공격자에 대한 인증 장
 | PRESENT 영향 또는 위험도 | 필요한 사유 |
 |---|---|
 | ui_ux | UI_CHANGE |
-| protocol_contract | PROTOCOL_CHANGE |
+| protocol_contract (SSTD↔SSTC 통신 계약) | PROTOCOL_CHANGE |
 | dependency | DEPENDENCY_CHANGE |
 | android_permission | ANDROID_PERMISSION_CHANGE |
 | destructive_action | DESTRUCTIVE_ACTION |
 | sstd_change_required | SSTD_CHANGE_REQUIRED |
 | HIGH | HIGH_RISK |
 | CRITICAL | CRITICAL_RISK |
+
+`protocol_contract`는 SSTD와 SSTC 사이의 wire version, opcode, payload, 직렬화,
+전송 값·단위 의미와 인증·handshake 요구사항에 대한 영향이다. 별도 parser·model·JSON
+schema가 필요하다는 사실만으로 이 영향을 선언하지 않는다. 독립 SSTC 배포 정보,
+Release 정보와 패키징 형식은 SSTD 통신 계약도 바꾼다는 근거가 있을 때만 이 범주에 해당한다.
+그 밖의 앱 데이터 형식·파싱·필드 간 일관성과 검증 요구사항은 summary와 evidence에
+보존하고 UI, dependency, permission, destructive 및 위험도를 각각 평가한다. SSTD
+통신 계약에 영향이 없다는 이유로 UI 승인이나 서명·패키징 위험을 생략하지 않는다.
+SSTD 통신 호환성이 불확실하면 UNKNOWN과 UNDETERMINED를 사용한다.
 
 sstd_change_required는 요청을 충족하려면 SSTD를 추가로 수정해야 하는지를 뜻한다.
 이 목록은 기존 Task의 approval_reason 문자열을 교체하지 않는다.
