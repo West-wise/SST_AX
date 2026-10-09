@@ -29,7 +29,7 @@ Codex 실행·일일 보고·상시 서비스화는 이 CLI에 포함하지 않�
 ```bash
 python3 -m venv /home/ax-runner/.venvs/sst-ax
 source /home/ax-runner/.venvs/sst-ax/bin/activate
-python -m pip install -r requirements-slack.txt
+python3 -m pip install -r requirements-slack.txt
 
 read -rsp 'Bot token: ' SLACK_BOT_TOKEN; printf '\n'
 read -rsp 'App token: ' SLACK_APP_TOKEN; printf '\n'
@@ -38,7 +38,7 @@ export SLACK_TEAM_ID='T실제ID'
 export SLACK_CHANNEL_ID='C실제ID'
 export SLACK_APP_ID='A실제ID'
 export SLACK_APPROVER_IDS='U실제ID'
-python -B scripts/slack_runner.py check
+python3 -B scripts/slack_runner.py check
 ```
 
 `SLACK_CONNECTED`는 Bot 인증과 Socket 연결 성공을 의미한다. 채널 전송·승인자
@@ -50,7 +50,7 @@ python -B scripts/slack_runner.py check
 비밀 저장소를 통해 주입해야 하며 누락된 값이 있으면 Task를 변경하기 전에 실패한다.
 
 ```bash
-python -B scripts/request_slack_approval.py \
+python3 -B scripts/request_slack_approval.py \
   --task-file "$TASK_FILE" \
   --reason UI_CHANGE
 ```
@@ -85,12 +85,16 @@ Task·checkpoint 변경 후 이전 메시지, 만료 요청, 다른 사용자·�
 상태 저장 중 실패하여 pending journal이 있으면 기존 복구 절차를 사용한다.
 
 ```bash
-python -B scripts/update_task_state.py --task-file "$TASK_FILE" --recover
-python -B scripts/validate_task_state.py "$TASK_FILE"
-python -B -m unittest discover -s tests -v
+python3 -B scripts/update_task_state.py --task-file "$TASK_FILE" --recover
+python3 -B scripts/validate_task_state.py "$TASK_FILE"
+python3 -B -m unittest discover -s tests -v
 ```
 
 복구 결과가 이미 `IMPLEMENTING`/`REJECTED`라면 다시 요청하지 않는다. 로컬 테스트는
 가짜 Slack 응답으로 승인 경계를 검사하며 실제 OCI 연결 성공을 대신하지 않는다.
 Socket 인증은 CLI가 담당하며 payload 파일을 받아 승인하는 CLI는 제공하지 않는다.
 같은 OS 계정이 Controller 파일을 임의 변경할 수 있는 환경은 격리 경계가 아니다.
+
+## 인증 자동 로딩과 일일 보고
+
+반복 입력 없는 별도 계정 Gateway, `/etc/sst_ax/.env`의 일일 보고 채널, 매일 09시(KST) 전날 집계와 설치·일회 전송 검증은 [Slack Gateway 안내](slack-gateway.md)를 따릅니다. 개인 요청 채널은 보류합니다.

@@ -24,7 +24,7 @@ GitHub는 SSTD 읽기와 SSTC Issue 읽기·Contents/Actions/Pull requests 쓰�
 
 ```bash
 cd "$HOME/workspace/SST_AX"
-python -B scripts/run_controller.py --config /absolute/path/controller.json --once
+python3 -B scripts/run_controller.py --config /absolute/path/controller.json --once
 ```
 
 한 차례 확인으로 설정·상태를 점검하고 준비되면 `--once`를 제거하여 주기 실행합니다. 승인 대기에 Codex를 유지하지 않고 여러 대기 Task를 하나의 bounded Socket Mode 연결로 처리합니다. 기존 대기 승인은 무거운 실행 단계 전에 확인합니다. Worker 실행 중 새 결정의 반영은 다음 polling 단계까지 지연될 수 있습니다. systemd 설치·자동 시작은 운영자가 수행합니다.
@@ -38,3 +38,7 @@ Codex 실행 파일·CLI 준비 오류는 분석 attempt를 사용하지 않고 
 SSTD main의 고정 범위와 Release commit을 읽고 journal·입력 식별자로 중복을 막습니다. 관측한 main에 이미 포함된 과거 commit의 새 Release는 Task를 추가하지 않습니다. 관계를 확인할 수 없으면 중단하여 검토를 요구합니다. SHA 관계는 [GitHub commit compare](https://docs.github.com/en/rest/commits/commits#compare-two-commits)의 고정 SHA 응답으로 확인합니다. 필요한 Git 객체는 확보하되 source checkout·미커밋 변경을 바꾸지 않습니다. SSTC에서는 AX UI/UX Issue 양식의 `[AX]` 제목에 요청·제약·확인 기준을 작성합니다. 본문 수정은 새 snapshot이며 이미 승인한 입력을 덮어쓰지 않습니다.
 
 운영자는 Slack 승인·거절, 판단 유보·문맥 상한·반복 실패·게시 응답 유실의 검토와 실제 reset 시각 확인, PR review·merge·기기 확인을 수행합니다. OCI에서 두 입력의 분기, 같은 세션·worktree 재개, 후보 SHA와 Actions·Draft PR 일치, 거절·실패·한도에서 PR 생성 차단을 확인해야 합니다. 로컬 테스트를 OCI 무인 운영 성공으로 기록하지 않습니다.
+
+## 별도 Slack Gateway
+
+`slack_gateway_socket`과 `slack_gateway_uid`를 함께 지정하면 인증정보 없이 별도 계정 Gateway에 승인 처리를 요청합니다. Gateway가 매일 09시(KST) 전날 일일 보고를 담당합니다. 실제 설치·권한과 미검증 범위는 [Gateway 안내](slack-gateway.md)를 따릅니다. 기존 source base·state directory·cursor는 유지합니다.
