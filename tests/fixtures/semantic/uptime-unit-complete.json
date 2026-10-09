@@ -1,0 +1,49 @@
+{
+  "case_id": "uptime-unit-complete",
+  "scenario_type": "counterfactual_on_pinned_source",
+  "source_context": {
+    "sstd_revision": "08f917cf853785cf026c6c32f7af244097ba3a15",
+    "sstc_revision": "2dd38fa6d8f0164f8c37d1e4c18984eccd20ad60"
+  },
+  "description": "가상 변경 전체: uint32 uptime 필드의 단위를 포화 처리된 밀리초로 바꾸며, 클라이언트의 시간 해석과 상한 도달 표시를 함께 변경한다.",
+  "evidence": {
+    "source_path": "src/SystemReader.cpp",
+    "source_replacements": {
+      "include/Protocol.hpp": [
+        {"before": "  uint32_t uptime_secs;", "after": "  // Legacy name: milliseconds, saturated at UINT32_MAX.\n  uint32_t uptime_secs;"}
+      ],
+      "src/SystemReader.cpp": [
+        {"before": "#include <iostream>", "after": "#include <iostream>\n#include <limits>"},
+        {"before": "    out.uptime_secs = static_cast<uint32_t>(info.uptime);", "after": "    const uint64_t uptimeSeconds =\n        info.uptime < 0 ? 0 : static_cast<uint64_t>(info.uptime);\n    const uint64_t maxMillis = std::numeric_limits<uint32_t>::max();\n    out.uptime_secs = static_cast<uint32_t>(\n        uptimeSeconds > maxMillis / 1000ULL ? maxMillis : uptimeSeconds * 1000ULL);"}
+      ]
+    },
+    "contract": {
+      "wire": "Little-endian uint32 milliseconds. SystemStats remains 134 bytes; plaintext remains 158 bytes. Other fields and offsets are unchanged.",
+      "range": "Negative OS uptime maps to zero. Nonnegative whole seconds multiply by 1000 only when that multiplication fits uint32. Larger values saturate at 4294967295; wrapping is forbidden. Exact uptime beyond this cap is intentionally not supported by this contract.",
+      "client_goal": "일반 값은 floor(wire_milliseconds / 1000)로 초 단위 모델에 정규화하고 기존 일·시·분 표시를 유지한다. wire 값이 4294967295이면 정확한 경과 시간으로 표시하지 않고 UI에 '49일 이상'이라고 표시한다. 이 상한 표시와 시간 해석 변경은 요청된 사용자 동작이다.",
+      "server_completion": "The replacements are the complete proposed server change, including overflow handling and field documentation. TcpServer serializes sizeof(SystemStats), and PacketUtil frames body.size(); unchanged serializers remain compatible with the unchanged size.",
+      "scope": "No dependency, Android permission, destructive operation or other server change is requested. Assess the hypothetical after-state against the pinned existing client. This is evaluation input, not an actual Git commit or implementation authorization."
+    },
+    "numeric_examples": [
+      {"os_uptime_seconds": 0, "wire_value": 0, "normalized_seconds": 0, "capped": false},
+      {"os_uptime_seconds": 1, "wire_value": 1000, "normalized_seconds": 1, "capped": false},
+      {"os_uptime_seconds": 86401, "wire_value": 86401000, "normalized_seconds": 86401, "capped": false},
+      {"os_uptime_seconds": 4294967, "wire_value": 4294967000, "normalized_seconds": 4294967, "capped": false},
+      {"os_uptime_seconds": 4294968, "wire_value": 4294967295, "normalized_seconds": 4294967, "capped": true},
+      {"os_uptime_seconds": 9223372036854775807, "wire_value": 4294967295, "normalized_seconds": 4294967, "capped": true}
+    ]
+  },
+  "expected": {
+    "source_type": "SSTD_CHANGE",
+    "change_required": "REQUIRED",
+    "impacts": {
+      "protocol_contract": "PRESENT",
+      "ui_ux": "PRESENT",
+      "dependency": "ABSENT",
+      "android_permission": "ABSENT",
+      "destructive_action": "ABSENT",
+      "sstd_change_required": "ABSENT"
+    },
+    "approval_reasons": ["PROTOCOL_CHANGE", "UI_CHANGE"]
+  }
+}

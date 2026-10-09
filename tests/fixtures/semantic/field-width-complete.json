@@ -1,0 +1,50 @@
+{
+  "case_id": "field-width-complete",
+  "scenario_type": "counterfactual_on_pinned_source",
+  "source_context": {
+    "sstd_revision": "08f917cf853785cf026c6c32f7af244097ba3a15",
+    "sstc_revision": "2dd38fa6d8f0164f8c37d1e4c18984eccd20ad60"
+  },
+  "description": "가상 변경 전체: uptime wire 폭을 uint64로 확대하고 서버 수집·packed 크기 검사를 함께 수정한다. 단위와 지원 숫자 범위 및 UI 동작은 유지한다.",
+  "evidence": {
+    "source_path": "include/Protocol.hpp",
+    "source_replacements": {
+      "include/Protocol.hpp": [
+        {"before": "  uint32_t uptime_secs;", "after": "  // Seconds, encoded as uint64; supported numeric range remains 0..UINT32_MAX.\n  uint64_t uptime_secs;"},
+        {"before": "static_assert(sizeof(SystemStats) == 134, \"SystemStats size mismatch\");", "after": "static_assert(sizeof(SystemStats) == 138, \"SystemStats size mismatch\");"}
+      ],
+      "src/SystemReader.cpp": [
+        {"before": "#include <iostream>", "after": "#include <iostream>\n#include <limits>"},
+        {"before": "    out.uptime_secs = static_cast<uint32_t>(info.uptime);", "after": "    const uint64_t seconds =\n        info.uptime < 0 ? 0 : static_cast<uint64_t>(info.uptime);\n    const uint64_t maxSeconds = std::numeric_limits<uint32_t>::max();\n    out.uptime_secs = seconds > maxSeconds ? maxSeconds : seconds;"}
+      ]
+    },
+    "contract": {
+      "wire": "Little-endian uint64 seconds. Packed SystemStats grows from 134 to 138 bytes; plaintext grows from 158 to 162 bytes. All fd and disk fields after uptime move by four bytes. SecureHeader remains 24 bytes.",
+      "range": "Supported nonnegative uptime remains 0..4294967295 seconds. This case changes the encoding width only, not the supported unsigned numeric range. Negative OS uptime maps to zero; higher values saturate at 4294967295. Full uint64-range values are outside this contract.",
+      "client_goal": "Update the type 0x11 decoder body/plaintext size checks, read uptime as eight little-endian bytes, and consume subsequent fd/disk fields at their new offsets. Existing signed Long model can hold every supported value. Keep the existing seconds-based UI and all display policies unchanged.",
+      "server_completion": "The replacements include the field declaration, matching 138-byte static assertion and collector assignment without uint32 narrowing. TcpServer serializes sizeof(SystemStats), and PacketUtil frames body.size(); both automatically serialize the new size and are supplied as supporting evidence.",
+      "scope": "No dependency, Android permission, destructive operation, UI policy or further server change is requested. Assess the complete hypothetical after-state against the pinned client. This is evaluation input, not an actual Git commit or implementation authorization."
+    },
+    "numeric_examples": [
+      {"os_uptime_seconds": -1, "wire_value": 0, "client_seconds": 0},
+      {"os_uptime_seconds": 1, "wire_value": 1, "client_seconds": 1},
+      {"os_uptime_seconds": 86401, "wire_value": 86401, "client_seconds": 86401},
+      {"os_uptime_seconds": 4294967295, "wire_value": 4294967295, "client_seconds": 4294967295},
+      {"os_uptime_seconds": 4294967296, "wire_value": 4294967295, "client_seconds": 4294967295},
+      {"os_uptime_seconds": 9223372036854775807, "wire_value": 4294967295, "client_seconds": 4294967295}
+    ]
+  },
+  "expected": {
+    "source_type": "SSTD_CHANGE",
+    "change_required": "REQUIRED",
+    "impacts": {
+      "protocol_contract": "PRESENT",
+      "ui_ux": "ABSENT",
+      "dependency": "ABSENT",
+      "android_permission": "ABSENT",
+      "destructive_action": "ABSENT",
+      "sstd_change_required": "ABSENT"
+    },
+    "approval_reasons": ["PROTOCOL_CHANGE"]
+  }
+}
