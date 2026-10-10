@@ -99,7 +99,8 @@
           "$ref": "#/$defs/impact"
         },
         "protocol_contract": {
-          "$ref": "#/$defs/impact"
+          "$ref": "#/$defs/impact",
+          "description": "SSTD와 SSTC 사이의 통신 계약 영향: wire version, opcode, payload, 직렬화, 전송 값·단위 의미, 인증·handshake. 독립 SSTC 배포 정보·패키징 형식은 이 통신 계약도 바꾼다는 근거가 있을 때만 해당한다."
         },
         "dependency": {
           "$ref": "#/$defs/impact"

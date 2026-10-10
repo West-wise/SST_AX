@@ -1,5 +1,12 @@
 # Codex 읽기 전용 분석과 재개
 
+`protocol_contract`는 SSTD↔SSTC 통신 계약에 대한 영향입니다. 독립 SSTC 배포 정보나
+패키징 형식에 새 parser·model·JSON schema가 필요하더라도, SSTD 통신 계약도 바뀐다는
+근거가 없으면 그 사실만으로 protocol 영향을 선언하지 않습니다. 해당 파싱·일관성·검증
+요구사항은 요약과 증거에 보존하고 UI·의존성·권한·파괴적 작업·위험도를 각각 평가합니다.
+SSTD 통신의 영향이 불확실하면 UNKNOWN/UNDETERMINED를 사용합니다. 결과 검증기,
+SSTD 계약 변경 중단, UI·HIGH 위험 Slack 승인과 후보 게시 범위는 그대로 적용합니다.
+
 Controller는 [고정 입력](impact-inputs.md)을 Codex에 전달하고 [결과 검증](impact-analysis.md)으로 구조·근거·입력 결합을 검사합니다. 분석 성공은 실행 허가가 아닙니다.
 
 새 분석의 요약(`summary`), 증거·영향의 설명(`reason`), 미해결 질문(`unresolved_questions`)은 한국어로 작성하도록 요청합니다. JSON 필드명·증거 ID·영향명·enum·승인 코드는 schema의 형식으로 유지합니다. 언어 지침은 새 분석에 적용하며, 보관된 분석과 승인 snapshot은 원래 해시와 함께 보존합니다.
