@@ -30,6 +30,31 @@ def git(path: Path, args: list[str], *, raw: bytes | None = None, index: str | N
     return result.stdout
 
 
+
+def base_modes(worktree: Path, revision: str, paths: list[str]) -> dict[str, str]:
+    """Read the bounded path set once without caching pinned source metadata."""
+    raw = git(worktree, ["ls-tree", "-z", revision, "--", *paths])
+    if raw and not raw.endswith(b"\0"):
+        raise ValueError("CANDIDATE_TREE_FORMAT")
+    modes = {}
+    requested = set(paths)
+    for record in raw.split(b"\0")[:-1]:
+        try:
+            header, name = record.split(b"\t", 1)
+            mode, kind, object_id = header.decode("ascii").split(" ")
+            name = name.decode("utf-8")
+        except (ValueError, UnicodeError):
+            raise ValueError("CANDIDATE_TREE_FORMAT") from None
+        if name not in requested or name in modes or not SHA.fullmatch(object_id):
+            raise ValueError("CANDIDATE_TREE_FORMAT")
+        if mode != "100644":
+            raise ValueError("CANDIDATE_FILE_MODE_REFUSED")
+        if kind != "blob":
+            raise ValueError("CANDIDATE_TREE_FORMAT")
+        modes[name] = mode
+    return modes
+
+
 def candidate_snapshot(worktree: Path, revision: str, branch: str) -> list[dict]:
     if not SHA.fullmatch(revision) or not branch.startswith("ax/sstc-sync/"):
         raise ValueError("CANDIDATE_CONTEXT_REQUIRED")
@@ -42,15 +67,15 @@ def candidate_snapshot(worktree: Path, revision: str, branch: str) -> list[dict]
     paths.discard("")
     if not 1 <= len(paths) <= 20:
         raise ValueError("CANDIDATE_CHANGE_COUNT")
-    files, total = [], 0
-    for name in sorted(paths):
+    names = sorted(paths)
+    for name in names:
         check_path(name)
         if (not re.fullmatch(r"app/src/[A-Za-z0-9_./-]+\.(kt|java|xml)", name) or
                 name.endswith("/AndroidManifest.xml") or any(part.startswith(".") for part in name.split("/"))):
             raise ValueError("CANDIDATE_SCOPE_REQUIRES_REVIEW")
-        mode = git(worktree, ["ls-tree", revision, "--", name]).decode().split(" ", 1)[0]
-        if mode not in {"", "100644"}:
-            raise ValueError("CANDIDATE_FILE_MODE_REFUSED")
+    base_modes(worktree, revision, names)
+    files, total = [], 0
+    for name in names:
         path = worktree / name
         if path.exists() or path.is_symlink():
             regular(path)

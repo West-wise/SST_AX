@@ -112,15 +112,19 @@ class SstcWorkerTest(unittest.TestCase):
         def fake_invoke(executable, session, prompt, cwd, **kwargs):
             self.assertIn(SESSION, worker.codex_command(executable, session))
             self.assertIn(b"Do not push", prompt)
+            self.assertIn(b"do not run local Android build, test, or lint commands", prompt)
+            self.assertIn(b"SST-AX Controller will run the pinned required validation", prompt)
             self.assertEqual(cwd, self.worktree)
             return 0, self.github_events(), None
         with patch.object(worker, "git", side_effect=fake_git), patch.object(worker, "create_worktree") as add, \
              patch.object(worker, "validation_plan", return_value=PLAN), \
              patch("sstc_candidate.candidate_snapshot", return_value=[]), \
-             patch.object(worker, "invoke", side_effect=fake_invoke), patch.object(worker, "validation", return_value=(0, "./gradlew testDebugUnitTest assembleDebug")):
+             patch.object(worker, "invoke", side_effect=fake_invoke), patch.object(worker, "validation", return_value=(0, "./gradlew testDebugUnitTest assembleDebug")) as validate:
             self.assertEqual(worker.run(self.task, self.source, self.worktree, "ax/sstc-sync/demo",
                                          self.inputs, "codex"), "IMPLEMENTED")
         add.assert_called_once_with(self.source, self.worktree, "ax/sstc-sync/demo", self.revision)
+        validate.assert_called_once()
+        self.assertEqual(validate.call_args.args, (self.worktree.absolute(),))
         state, log = storage.load_json(self.task), storage.load_json(storage.companion(self.task, "log"))
         self.assertEqual(state["status"], "IMPLEMENTING")
         self.assertEqual(log["codex_worker"]["validation"]["exit_code"], 0)

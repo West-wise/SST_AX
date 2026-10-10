@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import sstc_candidate as candidate
@@ -64,6 +65,62 @@ class SstcCandidateTest(unittest.TestCase):
         self.assertEqual(by_path["app/src/main/java/example/Existing.kt"]["sha256"],
                          hashlib.sha256(b"changed\n").hexdigest())
         self.assertTrue(all(item["mode"] == "100644" for item in result))
+
+
+    def test_snapshot_batches_all_modes_into_one_git_process(self):
+        self.write("app/src/main/java/example/Existing.kt", "changed\n")
+        self.write("app/src/main/java/example/Removed.kt", "changed\n")
+        for number in range(4):
+            self.write(f"app/src/main/java/example/Added{number}.kt", "new\n")
+        with patch.object(candidate, "git", wraps=candidate.git) as calls:
+            result = self.snapshot()
+        self.assertEqual(len(result), 6)
+        self.assertEqual(calls.call_count, 6)
+        commands = [call.args[1] for call in calls.call_args_list]
+        mode_commands = [command for command in commands if command[0] == "ls-tree"]
+        self.assertEqual(mode_commands, [["ls-tree", "-z", self.revision, "--",
+                                         *[item["path"] for item in result]]])
+
+    def test_malformed_batched_modes_are_rejected(self):
+        name = "app/src/main/java/example/Existing.kt"
+        self.write(name, "changed\n")
+        valid = b"100644 blob " + b"a" * 40 + b"\t" + name.encode() + b"\0"
+        cases = (
+            (valid[:-1], "CANDIDATE_TREE_FORMAT"),
+            (valid + valid, "CANDIDATE_TREE_FORMAT"),
+            (valid.replace(name.encode(), b"README.md"), "CANDIDATE_TREE_FORMAT"),
+            (valid.replace(b"blob", b"tree"), "CANDIDATE_TREE_FORMAT"),
+            (valid.replace(b"a" * 40, b"a" * 39), "CANDIDATE_TREE_FORMAT"),
+            (valid.replace(b"a" * 40, b"g" * 40), "CANDIDATE_TREE_FORMAT"),
+            (valid.replace(b"100644", b"100755"), "CANDIDATE_FILE_MODE_REFUSED"),
+            (valid.replace(b"100644", b"120000"), "CANDIDATE_FILE_MODE_REFUSED"),
+            (valid.replace(b"100644 blob", b"100644  blob"), "CANDIDATE_TREE_FORMAT"),
+            (b"\0", "CANDIDATE_TREE_FORMAT"),
+            (b"100644 blob " + b"a" * 40 + b"\t\xff\0", "CANDIDATE_TREE_FORMAT"),
+        )
+        real_git = candidate.git
+        for raw, reason in cases:
+            def malformed(path, arguments, **kwargs):
+                if arguments[0] == "ls-tree":
+                    return raw
+                return real_git(path, arguments, **kwargs)
+            with self.subTest(raw=raw), patch.object(candidate, "git", side_effect=malformed):
+                with self.assertRaisesRegex(ValueError, "^" + reason + "$"):
+                    self.snapshot()
+
+    def test_private_tree_rechecks_content_after_tree_creation(self):
+        path = self.write("app/src/main/java/example/Existing.kt", "approved\n")
+        files = self.snapshot()
+        real_git = candidate.git
+        def change_after_tree(repository, arguments, **kwargs):
+            result = real_git(repository, arguments, **kwargs)
+            if arguments[0] == "write-tree":
+                path.write_bytes(b"changed after tree creation\n")
+            return result
+        with patch.object(candidate, "git", side_effect=change_after_tree):
+            with self.assertRaisesRegex(ValueError, "^CANDIDATE_CHANGED$"):
+                candidate.tree_payload(self.repository, self.revision, self.branch, files)
+
 
     def test_private_tree_includes_added_and_deleted_bytes_without_changing_index(self):
         self.write("app/src/main/java/example/Existing.kt", "staged\n")

@@ -402,7 +402,9 @@ def run(task_file: Path, sstc_repository: Path, worktree: Path, branch: str,
             "Do not commit the changes. After the smallest change, do not run local Android build, test, or lint commands. "
             "The SST-AX Controller will request the required build and tests through GitHub Actions. "
             if validation_mode == "github" else
-            "After the smallest change, run exactly: ./gradlew testDebugUnitTest assembleDebug. ")
+            "Do not commit the changes. After the smallest change, do not run local Android build, test, or lint commands. "
+            "After implementation, the SST-AX Controller will run the pinned required validation exactly: "
+            "./gradlew testDebugUnitTest assembleDebug. ")
         protocol_instruction = ("Adapt the SSTC DTO, parser, field names, units and numeric interpretation to the already-published SSTD contract within the verified impact scope. Do not modify SSTD or invent a new server contract. "
                                 if state["source_type"] == "SSTD_CHANGE" else
                                 "Do not change the SSTD protocol contract. Stop if a new SSTD contract is required. ")
