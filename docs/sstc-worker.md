@@ -16,7 +16,7 @@ Worker는 검증된 정책 허용 또는 Slack 승인 근거가 있는 IMPLEMENT
 Worker의 file-change와 임의 shell은 모두 공유 write 예산을 소모합니다.
 `balanced-v2`에서는 총 20회 중 5회를 Controller 게시·Actions 요청·Draft PR에
 남겨 Worker가 15회까지만 사용합니다. 읽기처럼 보이는 shell에도 예외를 두지
-않습니다. 고정 Controller 읽기 점검만 별도 64회 한도로 계수합니다. profile 없는
+않습니다. 고정 Controller 읽기 점검만 별도 512회 한도로 계수합니다. profile 없는
 기존 Task는 기존 `legacy-v1` 계수와 권한을 유지하며 자동 이관하지 않습니다.
 
 Git의 replace objects·hooks·외부 diff/textconv를 끄고 원래 객체와 파일을 대조합니다. checkout 내용에 영향을 주는 `filter.*` 설정이 있는 저장소는 자동 실행 전에 `REPOSITORY_FILTER_REQUIRES_REVIEW`로 중단해 사람이 검토합니다.
