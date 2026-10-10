@@ -17,6 +17,7 @@ from impact_validation import SCHEMA_PATH, decode_document, load_document, valid
 from task_storage import (atomic_json, checkpoint_path, companion, load_checkpoint,
                           save_pair, task_lock, validate_pair)
 from update_task_state import utc_now
+from execution_limits import limits_for_task
 
 SESSION_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 MAX_EVENTS = 8 * MAX_TOTAL_BYTES
@@ -410,8 +411,8 @@ def reconcile_interrupted(task_file: Path, inputs: Path, *, abort=False,
         budget = load_document(budget_path)
         budget["analysis_sha256"] = digest(record)
         atomic_json(budget_path, budget)
-        if state["attempt"] >= 3 or budget["active_seconds"] >= 1800 or budget["write_steps"] > 20:
-            stop_budget(path, "ATTEMPT_LIMIT" if state["attempt"] >= 3 else "EXECUTION_BUDGET_EXHAUSTED")
+        if state["attempt"] >= limits_for_task(path).attempts or budget["active_seconds"] >= limits_for_task(path).active_seconds or budget["write_steps"] > limits_for_task(path).write_steps:
+            stop_budget(path, "ATTEMPT_LIMIT" if state["attempt"] >= limits_for_task(path).attempts else "EXECUTION_BUDGET_EXHAUSTED")
             return "ANALYSIS_FAILED"
         return "INTERRUPTED"
 
@@ -449,7 +450,7 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                 session = previous["session_id"]
             # Local import avoids making policy validation and this transport circular.
             from execution_policy import Budget, stop_budget
-            if state["attempt"] >= 3:
+            if state["attempt"] >= limits_for_task(path).attempts:
                 stop_budget(path, "ATTEMPT_LIMIT")
                 raise ValueError("ATTEMPT_LIMIT")
             try:
@@ -464,7 +465,7 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                     preflight(executable, cwd, timeout=budget.remaining)
                 except (OSError, ValueError, subprocess.TimeoutExpired) as error:
                     budget.finish("PREFLIGHT_FAILED")
-                    if budget.value["active_seconds"] >= 1800:
+                    if budget.exhausted:
                         stop_budget(path, "EXECUTION_BUDGET_EXHAUSTED")
                         raise
                     outcome = ("PREFLIGHT_TIMEOUT" if isinstance(error, subprocess.TimeoutExpired) else
@@ -561,7 +562,7 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                     checkpoint()
 
                 try:
-                    budget.tick()
+                    budget.tick(reads=1 if budget.limits.version == "balanced-v2" else 0)
                     code, raw, fault = invoke(args, prompt, cwd, on_session,
                                               timeout=min(TIMEOUT, budget.remaining), on_tick=budget.tick,
                                               on_start=on_start)
@@ -614,7 +615,7 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                         state["attempt"] -= 1
                         record["attempt"] = state["attempt"]
                 budget.finish(outcome)
-                if budget.value["active_seconds"] >= 1800 or budget.value["write_steps"] > 20:
+                if budget.exhausted:
                     outcome = "EXECUTION_BUDGET_EXHAUSTED"
                 record["outcome"] = outcome
                 budget.value["analysis_sha256"] = digest(record)
@@ -635,7 +636,7 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                     log["state_transitions"].append({"from_status": old, "to_status": state["status"],
                         "occurred_at": state["updated_at"], "reason": "Codex usage unavailable"})
                     resume_status = old
-                elif outcome in RETRYABLE and state["attempt"] >= 3:
+                elif outcome in RETRYABLE and state["attempt"] >= limits_for_task(path).attempts:
                     from execution_policy import transition
                     transition(state, log, "ANALYSIS_FAILED", "ATTEMPT_LIMIT")
                     log.update(stop_reason="ATTEMPT_LIMIT", finished_at=utc_now())

@@ -6,10 +6,23 @@ Worker는 검증된 정책 허용 또는 Slack 승인 근거가 있는 IMPLEMENT
 
 고정 commit의 AGENTS·CI를 읽고 지침 해시·검증 계획을 보존합니다. 지원 범위 밖의 dependency·permission·workflow 변경은 승인만으로 후보 허용 범위를 확대하지 않습니다.
 
+새 Task의 `balanced-v2`는 검증된 입력의 원본 증거를 최대 8개 파일·총 65,536
+바이트까지 Worker 시작 시 함께 전달합니다. Controller는 전달 전에 본문 해시를
+다시 확인하고 포함하지 못한 증거 ID를 남깁니다. 원래 입력·본문을 수정하거나
+누락된 증거를 검증 완료로 취급하지 않습니다. 증거는 분석 자료이며 저장소 지침이나
+실행 권한을 덮어쓰지 않습니다. 이 전달은 반복 shell 읽기를 줄이기 위한 것이며
+지침·범위·후보 검증을 생략하지 않습니다.
+
+Worker의 file-change와 임의 shell은 모두 공유 write 예산을 소모합니다.
+`balanced-v2`에서는 총 20회 중 5회를 Controller 게시·Actions 요청·Draft PR에
+남겨 Worker가 15회까지만 사용합니다. 읽기처럼 보이는 shell에도 예외를 두지
+않습니다. 고정 Controller 읽기 점검만 별도 512회 한도로 계수합니다. profile 없는
+기존 Task는 기존 `legacy-v1` 계수와 권한을 유지하며 자동 이관하지 않습니다.
+
 Git의 replace objects·hooks·외부 diff/textconv를 끄고 원래 객체와 파일을 대조합니다. checkout 내용에 영향을 주는 `filter.*` 설정이 있는 저장소는 자동 실행 전에 `REPOSITORY_FILTER_REQUIRES_REVIEW`로 중단해 사람이 검토합니다.
 
 ```bash
-python -B scripts/run_sstc_worker.py \
+python3 -B scripts/run_sstc_worker.py \
   --task-file "$TASK_FILE" --input-directory "$INPUT_DIR" \
   --sstc-repository "$SSTC_REPO" --worktree "$SSTC_WORKTREE" \
   --branch "$SSTC_BRANCH" --validation-mode github
@@ -39,7 +52,7 @@ python -B scripts/run_sstc_worker.py \
 부모 프로세스의 비정상 종료로 `RUNNING` receipt가 남았다면 기록된 Codex PID가 종료됐는지 OS로 확인합니다. 운영자는 크래시 전후 실제 누적 실행 시간과 write/shell 단계 수를 확인해 다음 명령에 넣습니다. 기존 카운터보다 작은 값은 거부하며, 복구 명령은 Codex를 호출하지 않습니다.
 
 ```bash
-python -B scripts/run_sstc_worker.py \
+python3 -B scripts/run_sstc_worker.py \
   --task-file "$TASK_FILE" --input-directory "$INPUT_DIR" \
   --sstc-repository "$SSTC_REPO" --worktree "$SSTC_WORKTREE" \
   --branch "$SSTC_BRANCH" --reconcile-interrupted \
