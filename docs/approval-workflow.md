@@ -17,4 +17,8 @@ Slack 메시지는 승인 snapshot에 결합된 결과를 다시 검사하여 �
 
 workspace·app·channel·허용 사용자·message ID·nonce·24시간 만료·snapshot이 맞을 때만 결정 저장 후 ack합니다. 승인 후 같은 구현 세션을 재개하며 거절은 REJECTED입니다. 승인 근거와 실행 기록은 분리하고, 입력·결과·범위가 바뀌면 이전 권한을 재사용하지 않습니다.
 
+승인 수신을 계속 유지하려면 `slack_runner.py serve --tasks-directory <신뢰한 Task 폴더>`를 사용합니다. 같은 Socket Mode 연결에서 새 승인 대기 Task를 다시 검색하며 SIGINT/SIGTERM으로 정상 종료합니다. 기존 `listen`과 Controller의 제한 시간 수신 API는 유지합니다. 승인 요청의 유효기간은 24시간이고, 임시 수신 프로세스의 종료 시각과 별개입니다. 수신 프로세스가 종료된 동안의 버튼 클릭을 정상 접수했다고 간주하지 않습니다.
+
+검증·저장된 승인/거절은 원래 요청 스레드에 한국어 접수 답장을 보냅니다. Task ID와 저장된 결정만 표시하며 구현 완료를 의미하지 않습니다. `IGNORED` 응답에는 성공 답장을 보내지 않습니다. 결정 저장과 답장 outbox 기록을 마친 뒤 Socket Mode ack를 보내고, Slack 메시지는 별도 worker에서 전송합니다. 답장 실패로 저장된 결정을 되돌리지 않습니다. 중복 버튼 전달은 같은 답장 기록을 사용하며, 전송 여부가 불확실한 경우 자동 재전송하지 않습니다.
+
 후보 SHA의 Actions와 run·attempt·artifact receipt가 모두 맞아야 Draft PR을 만듭니다. 승인이나 형식·컴파일 성공은 의미적 정확도, merge·Release·배포 권한이 아닙니다. 패킷·단위 테스트와 의미 평가를 사용하고 실제 기기 UI 확인은 사람에게 남깁니다.
