@@ -15,6 +15,10 @@ python -B scripts/run_sstc_worker.py \
   --branch "$SSTC_BRANCH" --validation-mode github
 ```
 
+AI 구현 단계는 두 모드 모두 Android build·test·lint를 실행하지 않습니다. local 모드의 필수 Gradle 검증은 구현 후 Controller가 한 번 수행합니다. github 모드는 기존과 같이 Actions가 검증합니다. 후보 검사·로컬 실패 처리·Actions receipt 확인은 유지합니다.
+
+후보 파일의 base mode는 파일 목록 전체를 한 번의 `git ls-tree -z`로 조회합니다. 파일별 본문·해시·secret·mode 검사와 게시 전후 snapshot은 계속 수행합니다.
+
 최초 작업 공간·branch는 새 것이어야 합니다. github 모드는 OCI에서 Android 빌드 없이 구현하고 후보 검사 후 IMPLEMENTED를 기록합니다. local 모드는 같은 후보 검사와 대상 지침의 Gradle 검증을 수행하고, 성공하면 로컬 검증 receipt를 포함한 IMPLEMENTED를 기록합니다. 두 모드 모두 Controller가 고정 후보 SHA를 게시하고 Actions 검증 후 Draft PR을 만듭니다. Worker의 PUSH_AUTHORIZATION·PR_AUTHORIZATION은 NONE입니다.
 
 | Worker 결과 | Task 상태와 다음 동작 |
