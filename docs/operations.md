@@ -8,6 +8,7 @@
 | manifest / evidence | 고정 SHA·요청·실제 본문 해시 |
 | 분석 / Codex checkpoint | 결과·세션·시도·입력 결합 |
 | 승인 checkpoint / 감사 기록 | 승인 당시 범위와 사람의 결정 |
+| `*.slack-feedback.json` | 승인·거절 답장 outbox와 전송 결과 |
 | execution-authority | 정책 허용 또는 Slack 승인·입력·결과·세션 결합 |
 | execution checkpoint | 누적 예산·재시도·작업 공간 재개 |
 | pipeline / GitHub receipt | 후보·run·attempt·artifact·Draft PR 결합 |
@@ -27,6 +28,16 @@ pair 복구 뒤에도 `RUNNING`이 남으면 기존 실행 결과가 불확실�
 최대 재시도 3회, 실제 활성 실행 누적 30분, write 단계 20회를 적용하며 승인·Actions 대기는 제외합니다. 후보 파일 상한은 별도 제한입니다. 재개는 예산을 초기화하지 않습니다. 사용량 제한은 DEFERRED_RATE_LIMIT이며 실제 확인한 reset 시각 전에는 호출하지 않습니다. 분석은 기존 reset 절차, 구현은 Worker 실행 checkpoint를 사용하는 재개 절차를 따릅니다.
 
 VALIDATING에서는 Actions를 확인하고 Codex를 다시 실행하지 않습니다. 게시 응답 유실은 PUBLISH_UNCERTAIN, PR 응답 유실은 PR_UNCERTAIN으로 보존합니다. 불확실한 POST를 반복하지 않고 정확한 원격 상태로 재조정할 수 있을 때만 이어갑니다. 검증 실패에는 Draft PR을 만들지 않습니다.
+
+Slack 승인 수신은 인증정보가 이미 제공된 운영 프로세스에서 다음 명시 모드로 계속 유지할 수 있습니다. 이 명령의 추가는 기존 Gateway 배포·OS 권한·서비스 설치 또는 Controller cursor를 변경하지 않습니다. 인증정보를 shell 명령이나 로그에 넣지 않습니다.
+
+```bash
+python3 -B scripts/slack_runner.py serve --tasks-directory /absolute/controller-owned/tasks
+```
+
+`SLACK_CONNECTED`와 `SLACK_WAITING_APPROVAL`은 연결·수신 준비를 나타냅니다. 버튼 결정의 실제 접수는 Task 감사 기록과 원래 Slack 스레드의 승인/거절 접수 답장으로 확인합니다. `SLACK_FEEDBACK=SENT`는 답장 전송 성공, `UNCERTAIN` 또는 `SLACK_FEEDBACK_REVIEW_REQUIRED`는 답장 확인 필요를 뜻합니다. Slack의 버튼 느낌표만으로 승인 기록을 변경하지 않습니다.
+
+답장 outbox의 `PENDING`은 저장된 결정에 한해 재개하고, 크래시 후 남은 `SENDING`은 `UNCERTAIN`으로 보존합니다. `SENT`와 `UNCERTAIN`은 자동 재전송하지 않습니다. 과거 수동 답장이나 outbox가 없는 과거 결정도 시작 시 자동 전송하지 않습니다. 불확실한 답장은 Task 결정·원래 Slack 스레드·전송 기록을 읽어 확인하며, 성공 값 편집이나 outbox 삭제로 재전송을 강제하지 않습니다. SIGINT/SIGTERM은 연결을 닫고 전송 중인 답장 worker가 마친 뒤 종료합니다.
 
 기존 OCI `sstc-feature-20260916-0001`의 dirty worktree와 WORKER_FAILED를 보존합니다. 현재 main 빌드 성공은 그 UI 후보의 검증이 아닙니다. 원래 승인·분석·manifest·세션·branch·diff가 복원 검증될 때만 같은 Task를 재개하고, 근거 부족이나 범위 변경은 사람의 새 승인·Task 판단으로 넘깁니다.
 
