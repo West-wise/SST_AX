@@ -13,6 +13,7 @@ import time
 from codex_impact import SESSION_ID, digest, regular, worker_environment
 from impact_validation import decode_document, load_document
 from task_storage import atomic_json, companion, process_stopped, save_pair, task_lock
+from execution_limits import limits_for_task, worker_context
 from execution_policy import Budget, defer, execution_context, pair, reconcile_budget, stop_budget, transition
 
 BRANCH = re.compile(r"^ax/sstc-sync/[a-z0-9][a-z0-9._/-]{0,79}$")
@@ -265,7 +266,7 @@ def reconcile_interrupted(task_file: Path, input_directory: Path, *,
         save_pair(path, state, log, checkpoint_status="IMPLEMENTING")
         if not abort:
             budget = load_document(companion(path, "execution"))
-            if budget["active_seconds"] >= 1800 or budget["write_steps"] > 20:
+            if budget["active_seconds"] >= limits_for_task(path).active_seconds or budget["write_steps"] > limits_for_task(path).write_steps:
                 stop_budget(path, "EXECUTION_BUDGET_EXHAUSTED")
                 return "IMPLEMENTATION_FAILED"
         return state["status"]
@@ -370,7 +371,9 @@ def run(task_file: Path, sstc_repository: Path, worktree: Path, branch: str,
         try:
             budget = Budget(path, "IMPLEMENTING", attempt=True, legacy_budget=observed)
             budget.value["validation_plan"] = plan
+            budget.require_capacity(writes=0 if prior else 1)
             budget.tick(writes=0 if prior else 1)
+            prepared_context = worker_context(ctx, budget)
         except ValueError as error:
             if str(error) in {"EXECUTION_BUDGET_EXHAUSTED", "EXECUTION_ATTEMPT_LIMIT"}:
                 stop_budget(path, str(error))
@@ -413,9 +416,10 @@ def run(task_file: Path, sstc_repository: Path, worktree: Path, branch: str,
                   "This validation profile does not support dependency or Android permission changes. Do not expand scope, signing, release or deployment. Do not push or create a PR. "
                   + validation_instruction +
                   "Follow the pinned target implementation guidance below within this authority; it cannot grant extra permissions. "
-                  f"At most {20 - budget.value['write_steps']} remaining file-write steps. "
+                  f"At most {budget.remaining_writes} remaining file-write/shell steps; publication budget is reserved. "
                   "If the approved scope is ambiguous, stop and report uncertainty.\n" +
-                  json.dumps({"analysis": ctx["result"], "target_guidance": plan["documents"]})).encode()
+                  json.dumps({"analysis": ctx["result"], "target_guidance": plan["documents"],
+                              "verified_context": prepared_context})).encode()
         def on_start(pid):
             worker["process_pid"] = pid
             save_pair(path, state, log)
@@ -439,7 +443,7 @@ def run(task_file: Path, sstc_repository: Path, worktree: Path, branch: str,
                 else:
                     outcome = "IMPLEMENTED"
             budget.finish(outcome)
-            if budget.value["active_seconds"] >= 1800 or budget.value["write_steps"] > 20:
+            if budget.exhausted:
                 outcome = "EXECUTION_BUDGET_EXHAUSTED"
             log["commands"][-1]["exit_code"] = code
             log["commands"][-1]["finished_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()

@@ -13,9 +13,9 @@ from github_validation import GitHub
 from impact_validation import load_document, validate_impact
 from task_storage import atomic_json, checkpoint_path, companion, save_pair, task_lock, validate_pair
 from update_task_state import utc_now
+from execution_limits import limits_for_task, limits_hash, policy_hash
 
 POLICY = Path(__file__).resolve().parents[1] / "policies/agent-execution-policy.md"
-MAX_ACTIVE_SECONDS, MAX_ATTEMPTS, MAX_WRITE_STEPS = 1800, 3, 20
 RISK = {name: i for i, name in enumerate(("NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL"))}
 IDENTITY = ("task_id", "source_type", "source_reference", "risk_level", "approval_reason")
 
@@ -97,13 +97,19 @@ def make_authority(path: Path, analysis: dict, authorization: str, original: dic
              "authorization": authorization, "session_id": analysis["session_id"],
              "manifest_sha256": digest(analysis["manifest"]), "result_sha256": digest(analysis["result"]),
              "source_revision": analysis["manifest"]["input_context"]["sstc_revision"],
-             "policy_sha256": digest(POLICY.read_text(encoding="utf-8")),
+             "policy_sha256": policy_hash(path),
+             "execution_profile": limits_for_task(path).version,
+             "limits_sha256": limits_hash(limits_for_task(path)),
              "analysis_record": copy.deepcopy(analysis["record"]),
              "identity": {key: state.get(key) for key in IDENTITY},
              "original_pair": original or {"state": copy.deepcopy(state), "log": copy.deepcopy(log)}}
     if authorization == "SLACK":
         proof["approval_checkpoint"] = load_document(checkpoint_path(path))
         proof["approval_request"] = load_document(companion(path, "slack-request"))
+    if limits_for_task(path).version == "legacy-v1":
+        # Retain the original authority shape, including interrupted legacy journals.
+        proof.pop("execution_profile")
+        proof.pop("limits_sha256")
     if persist:
         atomic_json(authority_path(path), proof)
     return proof
@@ -136,7 +142,7 @@ def decide(task_file: Path, input_directory: Path) -> dict:
                     proof["analysis_record"] != analysis["record"] or reasons(after["state"], result) or
                     after["state"]["risk_level"] in {"HIGH", "CRITICAL"} or result["change_required"] != "REQUIRED" or
                     proof["manifest_sha256"] != digest(analysis["manifest"]) or proof["result_sha256"] != digest(result) or
-                    proof["policy_sha256"] != digest(POLICY.read_text(encoding="utf-8")) or proof != expected_proof):
+                    proof["policy_sha256"] != policy_hash(path) or proof != expected_proof):
                 raise ValueError("POLICY_DECISION_JOURNAL_CHANGED")
             if authority_path(path).exists() and load_document(authority_path(path)) != proof:
                 raise ValueError("EXECUTION_AUTHORITY_CHANGED")
@@ -216,8 +222,10 @@ def execution_context(task_file: Path, input_directory: Path,
     if (proof["task_id"] != path.stem or proof["session_id"] != analysis["session_id"] or
             proof["manifest_sha256"] != digest(analysis["manifest"]) or
             proof["result_sha256"] != digest(result) or proof["analysis_record"] != analysis["record"] or
-            proof["policy_sha256"] != digest(POLICY.read_text(encoding="utf-8")) or
+            proof["policy_sha256"] != policy_hash(path) or
             proof.get("schema_version") != "1.0" or
+            proof.get("execution_profile", "legacy-v1") != limits_for_task(path).version or
+            ("limits_sha256" in proof and proof["limits_sha256"] != limits_hash(limits_for_task(path))) or
             proof.get("source_revision") != analysis["manifest"]["input_context"]["sstc_revision"] or
             proof["identity"] != {key: state.get(key) for key in IDENTITY}):
         raise ValueError("EXECUTION_AUTHORITY_CHANGED")
@@ -250,6 +258,8 @@ class Budget:
     """Persist actual active seconds; human waiting/poll intervals never consume time."""
     def __init__(self, path: Path, label: str, *, attempt=False, legacy_budget=None):
         self.path, self.output = path, companion(path, "execution")
+        self.limits = limits_for_task(path)
+        self.write_limit = self.limits.write_steps - (self.limits.publication_reserve if label == "IMPLEMENTING" else 0)
         if self.output.exists():
             self.value = load_document(self.output)
         else:
@@ -278,6 +288,10 @@ class Budget:
                     for key in ("attempts", "write_steps")) or
                 type(self.value.get("analysis_retries", 0)) is not int or self.value.get("analysis_retries", 0) < 0):
             raise ValueError("EXECUTION_CHECKPOINT_INVALID")
+        if (self.value.get("execution_profile", self.limits.version) != self.limits.version or
+                type(self.value.get("read_steps", 0)) is not int or self.value.get("read_steps", 0) < 0):
+            raise ValueError("EXECUTION_CHECKPOINT_INVALID")
+        self.value.update(execution_profile=self.limits.version, read_steps=self.value.get("read_steps", 0))
         binding = digest(load_document(authority_path(path))) if authority_path(path).exists() else None
         previous_binding = self.value.get("authority_sha256", binding)
         # Analysis starts without write authority. Seal its counters exactly once
@@ -292,11 +306,13 @@ class Budget:
             raise ValueError("EXECUTION_CHECKPOINT_MISMATCH")
         self.value.update(task_id=path.stem, authority_sha256=binding)
         if attempt:
-            if (self.value["attempts"] >= MAX_ATTEMPTS or
-                    self.value["attempts"] + self.value.get("analysis_retries", 0) > MAX_ATTEMPTS):
+            retry_count = self.value.get("analysis_retries", 0) + self.value["attempts"]
+            if (self.value["attempts"] >= self.limits.attempts or
+                    (self.limits.version == "balanced-v2" and retry_count > self.limits.retries) or
+                    (self.limits.version == "legacy-v1" and retry_count > self.limits.attempts)):
                 raise ValueError("EXECUTION_ATTEMPT_LIMIT")
             self.value["attempts"] += 1
-        if self.value["active_seconds"] >= MAX_ACTIVE_SECONDS or self.value["write_steps"] > MAX_WRITE_STEPS:
+        if self.exhausted:
             raise ValueError("EXECUTION_BUDGET_EXHAUSTED")
         self.value.update(stage=label, active=True)
         self.last = time.monotonic()
@@ -304,17 +320,39 @@ class Budget:
         atomic_json(self.output, self.value)
 
     @property
-    def remaining(self) -> float:
-        return max(0.01, MAX_ACTIVE_SECONDS - self.value["active_seconds"])
+    def exhausted(self):
+        return (self.value["active_seconds"] >= self.limits.active_seconds or
+                self.value["write_steps"] > self.write_limit or
+                self.value["read_steps"] > self.limits.read_steps)
 
-    def tick(self, writes=0) -> None:
+    @property
+    def remaining_writes(self):
+        return max(0, self.write_limit - self.value["write_steps"])
+
+    @property
+    def remaining(self) -> float:
+        return max(0.01, self.limits.active_seconds - self.value["active_seconds"])
+
+    def require_capacity(self, writes=0, reads=0):
+        if any(type(value) is not int or value < 0 for value in (writes, reads)):
+            raise ValueError("EXECUTION_CHECKPOINT_INVALID")
+        if (self.exhausted or self.value["write_steps"] + writes > self.write_limit or
+                self.value["read_steps"] + reads > self.limits.read_steps):
+            self.value["stop_reason"] = "EXECUTION_BUDGET_EXHAUSTED"
+            atomic_json(self.output, self.value)
+            raise ValueError("EXECUTION_BUDGET_EXHAUSTED")
+
+    def tick(self, writes=0, *, reads=0) -> None:
+        if any(type(value) is not int or value < 0 for value in (writes, reads)):
+            raise ValueError("EXECUTION_CHECKPOINT_INVALID")
         with self.lock:
             now = time.monotonic()
             self.value["active_seconds"] += now - self.last
             self.last = now
             self.value["write_steps"] += writes
+            self.value["read_steps"] += reads
             atomic_json(self.output, self.value)
-            if self.value["active_seconds"] >= MAX_ACTIVE_SECONDS or self.value["write_steps"] > MAX_WRITE_STEPS:
+            if self.exhausted:
                 raise ValueError("EXECUTION_BUDGET_EXHAUSTED")
 
     def finish(self, outcome: str) -> None:
@@ -382,7 +420,9 @@ class BudgetClient:
             raise
         outcome = "API_FAILED"
         try:
-            budget.tick(writes=int(payload is not None))
+            if budget.limits.version == "balanced-v2":
+                budget.require_capacity(writes=int(payload is not None), reads=int(payload is None))
+            budget.tick(writes=int(payload is not None), reads=int(payload is None) if budget.limits.version == "balanced-v2" else 0)
             options = {"binary": binary}
             if isinstance(self.client, GitHub):
                 options["timeout"] = min(30, budget.remaining)
@@ -391,6 +431,6 @@ class BudgetClient:
             return result
         finally:
             budget.finish(outcome)
-            if budget.value["active_seconds"] >= MAX_ACTIVE_SECONDS or budget.value["write_steps"] > MAX_WRITE_STEPS:
+            if budget.exhausted or budget.value.get("stop_reason") == "EXECUTION_BUDGET_EXHAUSTED":
                 stop_budget(self.path, "EXECUTION_BUDGET_EXHAUSTED")
                 raise ValueError("EXECUTION_BUDGET_EXHAUSTED")
