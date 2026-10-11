@@ -327,7 +327,9 @@ def run_once(config: dict, client=None, approval=None) -> dict:
         for key, event in journal["events"].items():
             task = tasks / (event["task_id"] + ".json")
             started = time.monotonic()
-            if event["failures"] >= 3:
+            from execution_limits import limits_for_task
+            failure_limit = limits_for_task(task).attempts
+            if event["failures"] >= failure_limit:
                 from execution_policy import stop_budget
                 with task_lock(task):
                     stop_budget(task, "CONTROLLER_FAILURE_LIMIT")
@@ -340,16 +342,20 @@ def run_once(config: dict, client=None, approval=None) -> dict:
                     waiting.append(task)
                 outcomes[event["task_id"]] = status
                 event["last_error"] = None
+                event["consecutive_failures"] = 0
             except Exception as error:
+                previous_error = event.get("last_error")
                 event["failures"] += 1
                 reason = error.args[0] if isinstance(error, ValueError) and error.args else None
                 event["last_error"] = (reason if isinstance(reason, str) and reason in ANALYSIS_ENVIRONMENT_ERRORS
                                        else "CONTROLLER_INPUT_EXECUTION_OR_CONTEXT_FAILED")
+                event["consecutive_failures"] = (event.get("consecutive_failures", 0) + 1
+                                                 if previous_error == event["last_error"] else 1)
                 status = load_document(task)["status"]
                 if status == "ANALYZING" and event["last_error"] not in ANALYSIS_ENVIRONMENT_ERRORS:
                     move(task, "ANALYSIS_FAILED", event["last_error"])
                     status = "ANALYSIS_FAILED"
-                elif event["failures"] >= 3:
+                elif event["failures"] >= failure_limit:
                     from execution_policy import stop_budget
                     with task_lock(task):
                         stop_budget(task, "CONTROLLER_FAILURE_LIMIT")
