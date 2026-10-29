@@ -16,6 +16,15 @@ SST-AX is the control plane for SSTD and SSTC automation. It creates tasks, pres
 
 ## Required Task Flow
 
+### Development branches
+
+- New deployments explicitly set `sstd_branch: dev` and `sstc_branch: dev`. SSTD `dev` changes create Tasks pinned to a fixed source range and SSTC `dev` SHA. New SSTC Draft PRs target `dev` from `ax/sstc-sync/*`.
+- `main` is the release baseline. In dev mode, main promotion and Releases do not create duplicate development Tasks. A human verifies the tested SSTD/SSTC SHA pair and integration results before promotion.
+- Keep `sstc-validation.yml` dispatch and receipts on trusted `main`, passing the exact candidate SHA.
+- Existing Tasks and publication receipts retain their original base. Missing legacy branch fields mean `main`.
+- Before changing branches, stop the Controller and back up config/journal. Preserve events and Task evidence; explicitly set the cursor to the reviewed pre-merge SSTD `dev` SHA and update journal branch metadata. A config/journal branch mismatch stops intake.
+- Verify deployed code, branch config, cursor, SSTC `dev` existence and successful polling before reporting readiness. AGENTS.md changes alone do not activate runtime behavior.
+
 ```text
 RECEIVED → ANALYZING → WAITING_APPROVAL? → IMPLEMENTING → VALIDATING → READY_FOR_REVIEW
 ```

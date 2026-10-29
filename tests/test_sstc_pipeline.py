@@ -110,10 +110,11 @@ class FakeGitHub:
                          "html_url": "https://github.com/" + sensor.REPOSITORY + "/pull/9",
                          "head": {"sha": CANDIDATE, "ref": self.owner.branch,
                                   "repo": {"full_name": sensor.REPOSITORY}},
-                         "base": {"ref": "main", "repo": {"full_name": sensor.REPOSITORY}},
+                         "base": {"ref": payload["base"], "repo": {"full_name": sensor.REPOSITORY}},
                          "title": payload["title"], "body": payload["body"]}
             return copy.deepcopy(self.pull)
-        if endpoint.startswith(PREFIX + "/pulls?state=all&base=main&head="):
+        if any(endpoint.startswith(PREFIX + "/pulls?state=all&base=" + base + "&head=")
+               for base in ("main", "dev")):
             return [{"number": self.pull["number"]}] if self.pull else []
         if endpoint == PREFIX + "/pulls/9":
             return copy.deepcopy(self.pull)
@@ -163,6 +164,49 @@ class SstcPipelineTest(unittest.TestCase):
 
     def publish(self):
         return pipeline.publish(self.path, self.inputs, self.client)
+
+    def test_dev_pr_keeps_main_validation_and_recovers_lost_response(self):
+        record = pipeline.publish(self.path, self.inputs, self.client, base_branch="dev")
+        self.assertEqual(record["base_branch"], "dev")
+        dispatch = next(payload for endpoint, payload, _ in self.client.calls if endpoint.endswith("/dispatches"))
+        self.assertEqual(dispatch["ref"], "main")
+        self.client.run_status = "completed"
+        original = self.client.api
+        def lost_response(endpoint, payload=None, **kwargs):
+            response = original(endpoint, payload, **kwargs)
+            if endpoint == PREFIX + "/pulls" and payload is not None:
+                raise TimeoutError("response lost")
+            return response
+        with patch.object(self.client, "api", side_effect=lost_response):
+            with self.assertRaises(TimeoutError):
+                pipeline.check(self.path, self.client)
+        self.assertEqual(self.client.pull["base"]["ref"], "dev")
+        self.assertEqual(pipeline.check(self.path, self.client)["outcome"], "READY_FOR_REVIEW")
+        self.assertTrue(any(endpoint.startswith(PREFIX + "/pulls?state=all&base=dev&head=")
+                            for endpoint, _, _ in self.client.calls))
+        self.assertEqual(sum(endpoint == PREFIX + "/pulls" and payload is not None
+                             for endpoint, payload, _ in self.client.calls), 1)
+
+    def test_dev_pr_rejects_main_response(self):
+        pipeline.publish(self.path, self.inputs, self.client, base_branch="dev")
+        self.client.run_status = "completed"
+        original = self.client.api
+        def wrong_base(endpoint, payload=None, **kwargs):
+            response = original(endpoint, payload, **kwargs)
+            if endpoint == PREFIX + "/pulls" and payload is not None:
+                response["base"]["ref"] = "main"
+            return response
+        with patch.object(self.client, "api", side_effect=wrong_base):
+            with self.assertRaisesRegex(ValueError, "DRAFT_PR_RECEIPT_MISMATCH"):
+                pipeline.check(self.path, self.client)
+
+    def test_legacy_pipeline_record_keeps_main_target(self):
+        record = self.publish()
+        record.pop("base_branch")
+        storage.atomic_json(pipeline.record_path(self.path), record)
+        self.client.run_status = "completed"
+        self.assertEqual(pipeline.check(self.path, self.client)["outcome"], "READY_FOR_REVIEW")
+        self.assertEqual(self.client.pull["base"]["ref"], "main")
 
     def test_real_slack_gate_implementation_publication_pending_and_ready(self):
         record = self.publish()
