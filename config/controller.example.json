@@ -4,5 +4,7 @@
   "state_directory": "/home/ax-runner/workspace/SST_AX/state",
   "worktree_directory": "/home/ax-runner/worktrees",
   "poll_seconds": 30,
+  "sstd_branch": "dev",
+  "sstc_branch": "dev",
   "bootstrap_sstd_base": "ROOT"
 }

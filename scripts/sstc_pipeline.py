@@ -121,7 +121,8 @@ def mark_published(path: Path, record: dict, state: dict, log: dict) -> None:
     atomic_json(record_path(path), record)
 
 
-def publish(task_file: Path, input_directory: Path, client=None) -> dict:
+def publish(task_file: Path, input_directory: Path, client=None, *, base_branch: str = "main") -> dict:
+    require(base_branch in ("main", "dev"), "PR_BASE_REFUSED")
     path = task_file.absolute()
     client = BudgetClient(client or GitHub(), path)
     with task_lock(path):
@@ -166,6 +167,7 @@ def publish(task_file: Path, input_directory: Path, client=None) -> dict:
         record = {"schema_version": "1.0", "repository": REPOSITORY, "task_id": state["task_id"],
                   "input_directory": str(input_directory.absolute()), "session_id": session,
                   "worktree": str(worktree), "branch": branch, "source_revision": revision,
+                  "base_branch": base_branch,
                   "candidate_files": files, "tree_sha": expected_tree, "candidate_sha": None,
                   "authority_sha256": __import__("codex_impact").digest(ctx["proof"]),
                   "analysis_record": copy.deepcopy(ctx["record"]),
@@ -274,6 +276,8 @@ def finish_abort(path: Path, record: dict, state: dict, log: dict) -> dict:
 
 
 def pr_payload(path: Path, record: dict) -> dict:
+    base_branch = record.get("base_branch", "main")
+    require(base_branch in ("main", "dev"), "PR_BASE_REFUSED")
     approved = record["analysis_record"]
     result = load_document(path.parent / approved["result_file"])
     regular(path.parent / approved["result_file"])
@@ -289,7 +293,7 @@ def pr_payload(path: Path, record: dict) -> dict:
             "사람의 코드 검토가 필요합니다. 화면 변경은 실제 기기의 세로·가로 방향에서 확인해야 합니다.\n"
             "checkpoint와 Slack 승인 기록을 권한 판단의 기준으로 사용했습니다.\n")
     return {"title": f"[SST-AX] {path.stem} 승인된 SSTC 변경", "body": body,
-            "head": record["branch"], "base": "main", "draft": True, "maintainer_can_modify": False}
+            "head": record["branch"], "base": base_branch, "draft": True, "maintainer_can_modify": False}
 
 
 def verify_pr(response: dict, record: dict, payload: dict) -> None:
@@ -300,7 +304,7 @@ def verify_pr(response: dict, record: dict, payload: dict) -> None:
             response.get("head", {}).get("sha") == record["candidate_sha"] and
             response["head"].get("ref") == record["branch"] and
             response["head"].get("repo", {}).get("full_name") == REPOSITORY and
-            response.get("base", {}).get("ref") == "main" and
+            response.get("base", {}).get("ref") == record.get("base_branch", "main") and
             response["base"].get("repo", {}).get("full_name") == REPOSITORY and
             response.get("title") == payload["title"] and response.get("body") == payload["body"],
             "DRAFT_PR_RECEIPT_MISMATCH")
@@ -366,7 +370,7 @@ def check(task_file: Path, client=None) -> dict:
         verify_ref(client, record)
         payload = pr_payload(path, record)
         if record["outcome"] in {"PR_UNCERTAIN", "FINALIZING"}:
-            pulls = client.api(PREFIX + "/pulls?state=all&base=main&head=" +
+            pulls = client.api(PREFIX + "/pulls?state=all&base=" + payload["base"] + "&head=" +
                                quote(REPOSITORY.split("/")[0] + ":" + record["branch"], safe="") + "&per_page=100")
             require(isinstance(pulls, list) and len(pulls) == 1, "PR_UNCERTAIN_REQUIRES_RECONCILIATION")
             response = client.api(PREFIX + "/pulls/" + str(pulls[0]["number"]))

@@ -10,6 +10,10 @@ GitHub는 SSTD 읽기와 SSTC Issue 읽기·Contents/Actions/Pull requests 쓰�
 
 ## 설정
 
+신규 운영은 `sstd_branch: dev`, `sstc_branch: dev`를 명시한다. 생략한 기존 설정은 호환성을 위해 `main`을 유지한다. `dev` 모드에서는 Release를 개발 분석 입력으로 접수하지 않으며, 새 SSTC PR은 `dev`를 대상으로 한다. 검증 workflow는 `main`에서 후보 SHA를 검증한다.
+
+브랜치 전환 전 Controller를 중지하고 config와 journal을 백업한다. 기존 events·Task 파일을 보존하면서 journal의 `sstd_branch`·`sstc_branch`를 갱신하고 `sstd_cursor`를 검토한 병합 전 `dev` SHA로 명시한다. 설정과 journal의 브랜치가 다르면 실행은 중단된다. 기존 Task와 PR은 원래 대상을 유지한다. `dev` 이력의 rewind·분기는 자동 접수하지 않는다.
+
 `config/controller.example.json`을 저장소 밖에 복사하고 절대 경로를 지정합니다.
 
 | 항목 | 의미 |

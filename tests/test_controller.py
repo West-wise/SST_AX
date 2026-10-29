@@ -39,7 +39,7 @@ class FakeIntake:
 
     def api(self, endpoint, payload=None, *, binary=False):
         self.calls.append((endpoint, payload))
-        if endpoint == SERVER + "/commits/main":
+        if endpoint in (SERVER + "/commits/main", SERVER + "/commits/dev"):
             return {"sha": self.owner.server_revision, "parents": [{"sha": self.owner.server_base}]}
         if endpoint.startswith(SERVER + "/commits/"):
             tag = endpoint.rsplit("/", 1)[-1]
@@ -55,7 +55,7 @@ class FakeIntake:
             return copy.deepcopy(self.releases)
         if endpoint == CLIENT + "/issues?state=open&per_page=100":
             return copy.deepcopy(self.issues)
-        if endpoint == CLIENT + "/commits/main":
+        if endpoint in (CLIENT + "/commits/main", CLIENT + "/commits/dev"):
             return {"sha": self.owner.client_revision}
         raise AssertionError("Unexpected API request: " + endpoint)
 
@@ -191,6 +191,81 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(event["base_revision"], self.server_base)
         self.assertEqual(event["source_revision"], self.server_revision)
         self.assertEqual(event["sstc_revision"], self.client_revision)
+
+    def test_dev_merge_and_issue_pin_dev_without_main_or_release_intake(self):
+        self.config.update(sstd_branch="dev", sstc_branch="dev")
+        self.api.issues = [self.issue()]
+        with patch.object(controller, "drive", return_value="RECEIVED"):
+            controller.run_once(self.config, self.api)
+            self.api.releases = [{"id": 1, "tag_name": "v1"}]
+            controller.run_once(self.config, self.api)
+        events = list(self.journal()["events"].values())
+        self.assertEqual(len(events), 2)
+        self.assertEqual({event["source_type"] for event in events}, {"SSTD_CHANGE", "SSTC_FEATURE"})
+        self.assertTrue(all(event["sstc_base_branch"] == "dev" and
+                            event["sstc_revision"] == self.client_revision for event in events))
+        endpoints = [endpoint for endpoint, _ in self.api.calls]
+        self.assertIn(SERVER + "/commits/dev", endpoints)
+        self.assertIn(CLIENT + "/commits/dev", endpoints)
+        self.assertFalse(any("/commits/main" in endpoint or "/releases" in endpoint for endpoint in endpoints))
+
+    def test_dev_bootstrap_waits_for_next_commit_and_rejects_rewind(self):
+        self.config.update(sstd_branch="dev", sstc_branch="dev", bootstrap_sstd_base=self.server_revision)
+        with patch.object(controller, "drive", return_value="RECEIVED"):
+            controller.run_once(self.config, self.api)
+            self.assertEqual(self.journal()["events"], {})
+            before = self.server_revision
+            self.write(self.server, "src/Logging.cpp", b"void next_dev_change() {}\n")
+            self.server_revision = self.commit(self.server)
+            controller.run_once(self.config, self.api)
+        event = next(iter(self.journal()["events"].values()))
+        self.assertEqual(event["base_revision"], before)
+        saved = self.journal()
+        self.server_revision = before
+        with self.assertRaisesRegex(ValueError, "SERVER_HISTORY_REQUIRES_REVIEW"):
+            controller.run_once(self.config, self.api)
+        self.assertEqual(self.journal(), saved)
+
+    def test_branch_change_requires_explicit_migration_before_task_work(self):
+        with patch.object(controller, "drive", return_value="RECEIVED"):
+            controller.run_once(self.config, self.api)
+        journal_path = self.config["state_directory"] / "controller.json"
+        legacy = self.journal()
+        legacy.pop("sstd_branch")
+        legacy.pop("sstc_branch")
+        for event in legacy["events"].values():
+            event.pop("sstc_base_branch")
+        storage.atomic_json(journal_path, legacy)
+        saved = journal_path.read_bytes()
+        self.config.update(sstd_branch="dev", sstc_branch="dev")
+        with patch.object(controller, "materialize") as materialize, patch.object(controller, "drive") as drive:
+            with self.assertRaisesRegex(ValueError, "CONTROLLER_BRANCH_MIGRATION_REQUIRED"):
+                controller.run_once(self.config, self.api)
+            materialize.assert_not_called()
+            drive.assert_not_called()
+        self.assertEqual(journal_path.read_bytes(), saved)
+        migrated = copy.deepcopy(legacy)
+        migrated.update(sstd_branch="dev", sstc_branch="dev", sstd_cursor=self.server_revision)
+        storage.atomic_json(journal_path, migrated)
+        with patch.object(controller, "drive", return_value="RECEIVED"):
+            controller.run_once(self.config, self.api)
+        after = self.journal()["events"]
+        self.assertEqual(set(after), set(legacy["events"]))
+        for key, event in legacy["events"].items():
+            for field in ("task_id", "source_revision", "base_revision", "sstc_revision"):
+                self.assertEqual(after[key][field], event[field])
+            self.assertNotIn("sstc_base_branch", after[key])
+
+    def test_configuration_accepts_dev_and_rejects_other_branches(self):
+        config = {key: str(value) if isinstance(value, Path) else value for key, value in self.config.items()}
+        config.update(sstd_branch="dev", sstc_branch="dev")
+        path = self.root / "config.json"
+        storage.atomic_json(path, config)
+        self.assertEqual(controller.configuration(path)["sstc_branch"], "dev")
+        config["sstd_branch"] = "feature/arbitrary"
+        storage.atomic_json(path, config)
+        with self.assertRaisesRegex(ValueError, "CONTROLLER_BRANCH_REFUSED"):
+            controller.configuration(path)
 
     def test_later_release_of_intermediate_main_commit_never_creates_backward_task(self):
         intermediate = self.server_revision

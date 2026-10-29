@@ -5,7 +5,7 @@ SST-AX는 [SSTD](https://github.com/West-wise/Server_State_Telemetry_Demon)의 �
 ## 기본 완료 기준
 
 ```text
-SSTD main / Release ─┐
+SSTD dev ────────────┐
                     ├→ Task → 고정 입력·문맥 → Codex 읽기 전용 분석
 SSTC [AX] Issue ─────┘                            ↓
                                     결과·근거·입력 결합 검증
@@ -17,7 +17,7 @@ SSTC [AX] Issue ─────┘                            ↓
                                                        ↓
                                       후보 SHA의 Actions 검증
                                                        ↓
-                                      Draft PR → READY_FOR_REVIEW
+                                      SSTC dev Draft PR → READY_FOR_REVIEW
 ```
 
 SSTD 내부 변경에 SSTC 영향이 없으면 PR을 만들지 않습니다. 계약뿐 아니라 수치·단위·범위·화면 표시 영향도 분석합니다. 이미 변경된 SSTD 계약에 맞추는 SSTC 수정과, SSTC 요청 때문에 SSTD 계약을 새로 작성하는 일은 구분합니다. 후자는 `PROTOCOL_APPROVAL_REQUIRED`에서 멈춥니다.

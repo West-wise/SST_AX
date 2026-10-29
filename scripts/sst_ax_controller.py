@@ -26,10 +26,14 @@ def configuration(path: Path) -> dict:
     required = {"sstd_repository", "sstc_repository", "state_directory", "worktree_directory",
                 "poll_seconds", "bootstrap_sstd_base"}
     bridge = {"slack_gateway_socket", "slack_gateway_uid"}
-    require(isinstance(config, dict) and set(config) <= required | bridge and
+    branches = {"sstd_branch", "sstc_branch"}
+    require(isinstance(config, dict) and set(config) <= required | bridge | branches and
             required <= set(config) and (set(config) & bridge in (set(), bridge)),
             "CONTROLLER_CONFIGURATION_REQUIRED")
     check_content(canonical(config))
+    for key in branches:
+        config.setdefault(key, "main")
+        require(config[key] in ("main", "dev"), "CONTROLLER_BRANCH_REFUSED")
     require(type(config["poll_seconds"]) is int and 15 <= config["poll_seconds"] <= 3600,
             "POLL_INTERVAL_REFUSED")
     for key in ("sstd_repository", "sstc_repository", "state_directory", "worktree_directory"):
@@ -85,20 +89,26 @@ def materialize(event: dict, tasks: Path) -> Path:
 
 
 def discover(journal: dict, config: dict, client) -> list[dict]:
-    """Read immutable identities; a main commit and its Release share one key."""
+    """Read fixed development ranges; retain Release intake only in legacy main mode."""
     server = "repos/" + REPOSITORIES["SSTD_CHANGE"]
-    main = client.api(server + "/commits/main")
-    target = main.get("sha")
+    branch = config.get("sstd_branch", "main")
+    head = client.api(server + "/commits/" + branch)
+    target = head.get("sha")
     require(isinstance(target, str) and SHA.fullmatch(target), "SERVER_HEAD_REQUIRED")
     previous = journal.get("sstd_cursor")
-    parents = main.get("parents", [])
     base = previous or config["bootstrap_sstd_base"]
     require(base == "ROOT" or isinstance(base, str) and SHA.fullmatch(base), "SERVER_BASE_REQUIRED")
     events = []
     if target != previous and target != base:
+        if branch == "dev" and base != "ROOT":
+            comparison = client.api(server + "/compare/" + base + "..." + target + "?per_page=1")
+            require(comparison.get("status") == "ahead" and
+                    comparison.get("base_commit", {}).get("sha") == base and
+                    comparison.get("merge_base_commit", {}).get("sha") == base,
+                    "SERVER_HISTORY_REQUIRES_REVIEW")
         events.append({"key": "sstd:" + target, "source_type": "SSTD_CHANGE",
                        "source_reference": target, "source_revision": target, "base_revision": base})
-    releases = client.api(server + "/releases?per_page=100")
+    releases = client.api(server + "/releases?per_page=100") if branch == "main" else []
     require(isinstance(releases, list) and len(releases) < 100, "RELEASE_POLL_LIMIT_REQUIRES_REVIEW")
     release_ids = []
     for release in releases:
@@ -253,7 +263,7 @@ def drive(path: Path, event: dict, config: dict, client) -> str:
         else:
             require(receipt.get("outcome") == "IMPLEMENTED", "WORKER_FAILURE_REQUIRES_REVIEW")
         from sstc_pipeline import publish
-        publish(path, inputs, client)
+        publish(path, inputs, client, base_branch=event.get("sstc_base_branch", "main"))
         return load_document(path)["status"]
     if status == "VALIDATING":
         from sstc_pipeline import check
@@ -272,11 +282,18 @@ def run_once(config: dict, client=None, approval=None) -> dict:
     with task_lock(path):
         journal = load_document(path) if path.exists() else {"schema_version": "1.0", "events": {}, "sstd_cursor": None}
         require(journal.get("schema_version") == "1.0" and isinstance(journal.get("events"), dict), "CONTROLLER_JOURNAL_REFUSED")
+        for key in ("sstd_branch", "sstc_branch"):
+            branch = config.get(key, "main")
+            require(branch in ("main", "dev"), "CONTROLLER_BRANCH_REFUSED")
+            if path.exists():
+                require(journal.get(key, "main") == branch, "CONTROLLER_BRANCH_MIGRATION_REQUIRED")
+            journal[key] = branch
         # Repair every reserved identity before assigning any further daily ID.
         for event in journal["events"].values():
             materialize(event, tasks)
         new_events = discover(journal, config, client)
-        client_commit = client.api("repos/" + REPOSITORIES["SSTC_FEATURE"] + "/commits/main").get("sha")
+        client_commit = client.api("repos/" + REPOSITORIES["SSTC_FEATURE"] +
+                                   "/commits/" + journal["sstc_branch"]).get("sha")
         require(isinstance(client_commit, str) and SHA.fullmatch(client_commit), "CLIENT_HEAD_REQUIRED")
         reserved_ids = {event["task_id"] for event in journal["events"].values()}
         reserved_events = []
@@ -293,6 +310,7 @@ def run_once(config: dict, client=None, approval=None) -> dict:
             require(sequence <= 9999, "TASK_ID_SPACE_EXHAUSTED")
             reserved_ids.add(task_id)
             event.update(task_id=task_id, sstc_revision=client_commit,
+                         sstc_base_branch=journal["sstc_branch"],
                          failures=0, active_seconds=0, last_error=None)
             journal["events"][key] = event
             reserved_events.append(event)
