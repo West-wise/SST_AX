@@ -383,6 +383,22 @@ def run_once(config: dict, client=None, approval=None) -> dict:
             atomic_json(path, journal)
         if any(task not in existing_waiting for task in waiting):
             poll_approvals(waiting)
+        # Completion transport is separate from execution/failure counters. An
+        # isolated Gateway scans its own trusted directory; legacy env mode
+        # performs the same fixed notification here, including after restart.
+        if "slack_gateway_socket" not in config:
+            from slack_completion_feedback import deliver_completions, ledger_path
+            completed = [tasks / (ident + ".json") for ident, status in outcomes.items()
+                         if status == "READY_FOR_REVIEW" and ledger_path(tasks / (ident + ".json")).exists()]
+            if completed:
+                try:
+                    import os
+                    from slack_runner import configuration as slack_configuration
+                    completion_status = deliver_completions(completed, slack_configuration(os.environ))
+                except Exception:
+                    completion_status = 2
+                if completion_status:
+                    print("SLACK_COMPLETION=REVIEW_REQUIRED", file=__import__("sys").stderr, flush=True)
         atomic_json(path, journal)
         return {"outcomes": outcomes, "pending_approvals": len(waiting),
                 "approval_error": journal.get("approval_error")}

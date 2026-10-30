@@ -10,6 +10,27 @@
 
 날짜별 immutable snapshot과 delivery ledger를 보존하고 POST 전에 `SENDING`을 기록한다. workspace·channel·message timestamp를 대조해 성공을 확정한다. `SENT`인 날은 재전송하지 않는다. 응답 유실·중단·불일치는 `UNCERTAIN`으로 두고 자동 재전송하지 않는다. 확실한 미전송만 같은 snapshot으로 최대 3회 시도하며 인증·집계 실패도 checkpoint에 누적해 3회 이후 확인 대기로 둔다. 보고 대상 40개·스캔 10,000개·Slack 크기 한도를 넘으면 전송 전에 중단한다.
 
+## 승인 스레드의 작업 완료 답장
+
+새 승인 접수 때 완료 알림을 예약한다. 구현·필수 Actions 검증·PR 생성이 끝나
+Task가 `READY_FOR_REVIEW`가 되면 원래 승인 메시지의 스레드에 한국어 완료 답장과
+검증된 SSTC PR 링크를 보낸다. 검토 준비 완료를 뜻하며 merge·Release·배포 완료를
+표시하지 않는다. 거절·실패·검증 중 상태에는 완료 답장을 보내지 않는다.
+
+상시 승인 수신기, 별도 UID Gateway, 기존 환경변수 Controller 경로가 같은 완료
+전송기를 사용한다. 새로운 Slack scope·토큰·설정 필드나 AI 호출은 추가하지 않는다.
+승인 audit의 workspace·app·사용자·채널·메시지와 Task·분석·producer·Sensor·PR 영수증을
+대조하며, 요청 본문·임의 URL·외부 채널을 메시지로 전달하지 않는다.
+
+완료 ledger는 `<task-id>.slack-completion.json`에 별도로 보존한다. POST 전에
+`SENDING`, 확인된 응답에만 `SENT`를 기록한다. 재시작과 중복 scan은 성공 답장을
+재전송하지 않는다. POST 결과 유실·중단은 `UNCERTAIN`으로 남기며 자동 재전송하지
+않는다. 실제 POST 이전 인증 실패만 최대 3회 허용한다. 알림 실패는 완료 Task·PR·
+실행 예산·Controller 실패 횟수를 되돌리지 않는다. 과거 승인 기록에 새 알림을
+자동 소급하지 않는다. 이전 ledger·실패 기록을 삭제해 재시도하지 않는다.
+
+새 코드의 배포 및 실제 Slack 표시 확인은 운영 절차에 따라 별도로 수행한다.
+
 ## 인증 파일과 설치
 
 Ubuntu가 관리하는 `/etc/sst_ax/.env`는 소유자 전용 `0600`으로 둔다. 필드는 `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_TEAM_ID`, `SLACK_CHANNEL_ID`, `SLACK_DAILY_REPORT_CHANNEL_ID`, `SLACK_APP_ID`, `SLACK_APPROVER_IDS`다. 승인자는 공백 없이 쉼표로 구분한다. 실제 값은 저장소·Task·채팅에 기록하지 않는다.

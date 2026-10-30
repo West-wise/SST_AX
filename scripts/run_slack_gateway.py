@@ -20,6 +20,7 @@ from impact_validation import load_document
 from slack_credentials import credential_path, read_credentials
 from slack_gateway_client import TASK_ID, peer_uid, read_frame, write_frame
 from slack_runner import listen_many, run as slack_run
+from slack_completion_feedback import deliver_completions
 
 
 def configuration(path: Path) -> dict:
@@ -113,6 +114,11 @@ def report_tick(config: dict, credentials: dict, now: datetime | None = None) ->
     return status
 
 
+def completion_tick(config: dict, credentials: dict) -> int:
+    from slack_runner import trusted_tasks
+    return deliver_completions(trusted_tasks(config["tasks_directory"]), credentials)
+
+
 def serve(config: dict, credentials: dict) -> None:
     path = config["socket_path"]
     parent = path.parent.stat()
@@ -130,9 +136,18 @@ def serve(config: dict, credentials: dict) -> None:
         server.listen(8)
         server.settimeout(1)
         next_report, previous_report = 0.0, None
+        next_completion, previous_completion = 0.0, None
         print("SLACK_GATEWAY=READY", flush=True)
         try:
             while not stop:
+                if time.monotonic() >= next_completion:
+                    try:
+                        completion = completion_tick(config, credentials)
+                    except Exception:
+                        completion = 2
+                    if completion and completion != previous_completion:
+                        print("SLACK_COMPLETION=REVIEW_REQUIRED", flush=True)
+                    previous_completion, next_completion = completion, time.monotonic() + 5
                 if time.monotonic() >= next_report:
                     try:
                         status = report_tick(config, credentials)

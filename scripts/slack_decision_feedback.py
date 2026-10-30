@@ -79,6 +79,11 @@ def prepare_feedback(task_file: Path, decision: str, config: dict) -> str:
         path, ledger = _ledger(task_file)
         entry = ledger["deliveries"].get(key)
         if entry is None:
+            if decision == "IMPLEMENTING":
+                from slack_completion_feedback import arm_completion
+                # Arm before the decision outbox write, so a crash cannot leave
+                # a new durable decision reply with no completion subscription.
+                arm_completion(task_file, key, identity)
             ledger["deliveries"][key] = dict(identity, status="PENDING", message_ts=None)
             atomic_json(path, ledger)
         else:
