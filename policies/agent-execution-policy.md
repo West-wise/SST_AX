@@ -56,6 +56,12 @@ Controller 예외의 전체 상한 3회도 유지한다. 연속 동일 오류 �
 
 사용량 한도는 계정에 표시된 실제 리셋 시각을 기준으로 재개한다. Controller는 추정 사용량으로 권한을 확대하거나 새로운 계정을 사용해서는 안 된다.
 
+## Model Routing
+
+신규 Task의 모델 선택은 [모델 라우팅](../docs/model-routing.md)을 따른다. 모델과 추론
+강도를 명시하고 정책 pin과 사용량을 기록한다. 모델 선택은 권한을 부여하지 않으며
+기존 Task의 실행 profile·승인·시도·예산·cursor를 변경하지 않는다.
+
 ## Required Escalations
 
 - HIGH 또는 CRITICAL 위험도

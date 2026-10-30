@@ -14,6 +14,7 @@ from impact_validation import load_document, validate_impact
 from task_storage import atomic_json, checkpoint_path, companion, save_pair, task_lock, validate_pair
 from update_task_state import utc_now
 from execution_limits import limits_for_task, limits_hash, policy_hash
+from model_routing import validate_analysis_route
 
 POLICY = Path(__file__).resolve().parents[1] / "policies/agent-execution-policy.md"
 RISK = {name: i for i, name in enumerate(("NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL"))}
@@ -46,6 +47,7 @@ def validated_analysis(task_file: Path, input_directory: Path | None = None) -> 
     record = log.get("codex_analysis", {})
     if record.get("outcome") != "VALID":
         raise ValueError("VALID_ANALYSIS_REQUIRED")
+    validate_analysis_route(state, log, record)
     result_file = path.parent / record["result_file"]
     if result_file.parent != path.parent or result_file.name != record["result_file"]:
         raise ValueError("RESULT_PATH")

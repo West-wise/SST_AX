@@ -107,6 +107,7 @@ def build_task_log(task_state: dict[str, Any], now: str) -> dict[str, Any]:
     task_log = load_json(template_path)
     revision = repository_revision()
     from execution_limits import DEFAULT_PROFILE
+    from model_routing import new_task_routing
     task_log.update(
         {
             "task_id": task_state["task_id"],
@@ -116,6 +117,7 @@ def build_task_log(task_state: dict[str, Any], now: str) -> dict[str, Any]:
             "started_at": now,
             "policy_version": revision,
             "execution_profile": DEFAULT_PROFILE,
+            "model_routing": new_task_routing(),
             "guide_version": revision,
             "commands": [],
             "state_transitions": [

@@ -648,6 +648,24 @@ class CodexImpactTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 3)
         self.assertTrue(storage.process_stopped(processes[0]))
 
+    def test_new_task_records_the_explicit_analysis_route(self):
+        self.assertEqual(self.execute(), "VALID")
+        state, log = self.pair()
+        route = log["codex_analysis"]["model_route"]
+        self.assertEqual((route["model"], route["effort"]), ("gpt-6.1-sol", "high"))
+        self.assertEqual(log["codex_analysis"]["routing_risk"], "HIGH")
+        self.assertEqual(self.last_args[self.last_args.index("--model") + 1], route["model"])
+        self.assertIn('model_reasoning_effort="high"', self.last_args)
+        self.assertIsNone(log["codex_analysis"]["usage"])
+
+    def test_legacy_task_keeps_the_original_analysis_command(self):
+        state, log = self.pair()
+        log.pop("model_routing")
+        storage.save_pair(self.path, state, log)
+        self.assertEqual(self.execute(), "VALID")
+        self.assertNotIn("--model", self.last_args)
+        self.assertNotIn("model_route", self.pair()[1]["codex_analysis"])
+
     def test_flags_and_capability_refusal(self):
         args = worker.command("codex", Path("schema.json"), SESSION)
         for flag in ("read-only", "--ignore-user-config", "--ignore-rules",

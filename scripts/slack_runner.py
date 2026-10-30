@@ -13,6 +13,7 @@ from threading import Event, Lock
 from time import monotonic
 
 from slack_decision_feedback import TASK_ID, prepare_feedback, recover_feedback, send_feedback
+from slack_completion_feedback import ledger_path as completion_path, send_completion
 from task_storage import companion, load_json, task_lock, validate_pair
 
 sys.dont_write_bytecode = True
@@ -176,6 +177,16 @@ def run(args, config):
             done.set()
 
     recovered = set()
+    completion_queued = set()
+
+    def deliver_completion(path):
+        try:
+            print("SLACK_COMPLETION=" + send_completion(path, config, web), flush=True)
+        except BlockingIOError:
+            with record_lock:
+                completion_queued.discard(path)
+        except Exception:
+            print("SLACK_COMPLETION_REVIEW_REQUIRED", file=sys.stderr, flush=True)
 
     def refresh(send_requests=True):
         paths = (trusted_tasks(root) if persistent else
@@ -185,6 +196,12 @@ def run(args, config):
                 with task_lock(path):
                     state = load_json(path)
                 if state["status"] != "WAITING_APPROVAL":
+                    if state["status"] == "READY_FOR_REVIEW" and completion_path(path).exists():
+                        with record_lock:
+                            enqueue_completion = path not in completion_queued
+                            completion_queued.add(path)
+                        if enqueue_completion:
+                            feedback.submit(deliver_completion, path)
                     if path not in recovered:
                         key = recover_feedback(path, config)
                         recovered.add(path)
@@ -273,7 +290,8 @@ def trusted_tasks(root):
         except BlockingIOError:
             # Controller or reply worker is committing this task. Try next scan.
             continue
-        if state["status"] == "WAITING_APPROVAL" or companion(path, "slack-feedback").exists():
+        if (state["status"] == "WAITING_APPROVAL" or companion(path, "slack-feedback").exists()
+                or completion_path(path).exists()):
             selected.append(path)
     return selected
 

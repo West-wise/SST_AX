@@ -9,6 +9,7 @@ import re
 import subprocess
 import threading
 import time
+from model_routing import route_arguments, usage_summary, implementation_route
 
 from codex_impact import SESSION_ID, digest, regular, worker_environment
 from impact_validation import decode_document, load_document
@@ -89,19 +90,20 @@ def write_environment() -> dict[str, str]:
     return env
 
 
-def codex_command(executable: str, session_id: str) -> list[str]:
+def codex_command(executable: str, session_id: str, model_route=None) -> list[str]:
     if not SESSION_ID.fullmatch(session_id):
         raise ValueError("SESSION_ID_REFUSED")
     return [executable, "exec", "--sandbox", "workspace-write", "--ignore-user-config",
             "--ignore-rules", "--json", "-c", 'approval_policy="never"',
             "-c", 'web_search="disabled"', "-c", "features.apps=false",
             "-c", "features.plugins=false", "-c", "features.web_search=false",
-            "resume", session_id, "-"]
+            *route_arguments(model_route), "resume", session_id, "-"]
 
 
 def invoke(executable: str, session_id: str, prompt: bytes, cwd: Path, *,
-           timeout: float = TIMEOUT, on_tick=None, on_write=None, on_start=None) -> tuple[int, bytes, str | None]:
-    command = codex_command(executable, session_id)
+           timeout: float = TIMEOUT, on_tick=None, on_write=None, on_start=None,
+           model_route=None) -> tuple[int, bytes, str | None]:
+    command = codex_command(executable, session_id, model_route)
     output = bytearray()
     fault: list[str] = []
     with subprocess.Popen(command, cwd=cwd, env=write_environment(), stdin=subprocess.PIPE,
@@ -228,6 +230,8 @@ def reconcile_interrupted(task_file: Path, input_directory: Path, *,
         ctx = execution_context(path, input_directory)
         state, log = ctx["state"], ctx["log"]
         worker = log.get("codex_worker", {})
+        if worker.get("model_route") != implementation_route(ctx):
+            raise ValueError("MODEL_ROUTING_WORKER_CHANGED")
         if state["status"] != "IMPLEMENTING" or worker.get("outcome") != "RUNNING":
             raise ValueError("RUNNING_WORKER_REQUIRED")
         if (worker.get("session_id") != ctx["session_id"] or
@@ -241,7 +245,7 @@ def reconcile_interrupted(task_file: Path, input_directory: Path, *,
         command = entry.get("command")
         if (entry.get("name") != "codex-sstc-worker" or entry.get("started_at") != worker.get("started_at") or
                 not isinstance(command, list) or not command or
-                command != codex_command(command[0], ctx["session_id"])):
+                command != codex_command(command[0], ctx["session_id"], worker.get("model_route"))):
             raise ValueError("WORKER_RECEIPT_REFUSED")
         pid = worker.get("process_pid")
         if pid is not None and not process_stopped(pid):
@@ -338,6 +342,7 @@ def run(task_file: Path, sstc_repository: Path, worktree: Path, branch: str,
             raise ValueError("IMPLEMENTING_REQUIRED")
         ctx = execution_context(path, input_directory)
         session, input_revision = ctx["session_id"], ctx["proof"]["source_revision"]
+        model_route = implementation_route(ctx)
         if (not isinstance(input_revision, str) or not re.fullmatch(r"[0-9a-f]{40}", input_revision) or
                 ctx["record"].get("sstc_revision", input_revision) != input_revision):
             raise ValueError("PINNED_REVISION_REQUIRED")
@@ -346,6 +351,8 @@ def run(task_file: Path, sstc_repository: Path, worktree: Path, branch: str,
                                if item["kind"] == "target_instructions" and not item["missing"]])
         prior = log.get("codex_worker")
         if prior:
+            if prior.get("model_route") != model_route:
+                raise ValueError("MODEL_ROUTING_WORKER_CHANGED")
             if not resume or prior.get("outcome") in {"IMPLEMENTED", "VALIDATED"}:
                 raise ValueError("EXPLICIT_RESUME_REQUIRED")
             if prior.get("outcome") not in {"CODEX_FAILED", "TIMEOUT", "INTERRUPTED", "RATE_LIMIT", "WORKER_FAILED", "WORKER_UNAVAILABLE"}:
@@ -384,9 +391,11 @@ def run(task_file: Path, sstc_repository: Path, worktree: Path, branch: str,
         worker.update(validation_mode=validation_mode, authority_sha256=__import__("codex_impact").digest(ctx["proof"]),
                       validation_plan=plan)
         log["codex_worker"] = worker
+        if model_route is not None:
+            worker["model_route"] = model_route
         if prior:
             log.setdefault("worker_attempts", []).append(prior)
-        log["commands"].append({"name": "codex-sstc-worker", "command": codex_command(executable, session),
+        log["commands"].append({"name": "codex-sstc-worker", "command": codex_command(executable, session, model_route),
                                 "exit_code": None, "started_at": worker["started_at"],
                                 "finished_at": None, "artifact_paths": [branch]})
         save_pair(path, state, log)
@@ -430,7 +439,8 @@ def run(task_file: Path, sstc_repository: Path, worktree: Path, branch: str,
         try:
             code, raw, fault = invoke(executable, session, prompt, worktree.absolute(),
                                      timeout=budget.remaining, on_tick=budget.tick, on_write=budget.tick,
-                                     on_start=on_start)
+                                     on_start=on_start, model_route=model_route)
+            worker["usage"] = usage_summary(raw)
             invocation_finished = True
             outcome = fault or validate_events(raw, session) or ("CODEX_FAILED" if code else None)
             if outcome is None:

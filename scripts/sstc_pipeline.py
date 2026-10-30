@@ -12,6 +12,7 @@ from impact_collection import check_content
 from impact_validation import load_document
 from sstc_candidate import candidate_snapshot, git, tree_payload
 from sstc_worker import BRANCH, codex_command
+from model_routing import implementation_route
 from task_storage import atomic_json, companion, save_pair, task_lock, validate_pair
 from update_task_state import utc_now
 from execution_policy import BudgetClient, execution_context
@@ -144,12 +145,13 @@ def publish(task_file: Path, input_directory: Path, client=None, *, base_branch:
                     ["chmod +x gradlew", "./gradlew testDebugUnitTest assembleDebug"],
                     "LOCAL_VALIDATION_RECEIPT_REQUIRED")
         ctx = execution_context(path, input_directory.absolute())
+        require(worker.get("model_route") == implementation_route(ctx), "MODEL_ROUTING_WORKER_CHANGED")
         entry = log["commands"][-1]
         manifest, session = ctx["manifest"], ctx["session_id"]
         require(entry.get("name") == "codex-sstc-worker" and type(entry.get("exit_code")) is int and
                 entry["exit_code"] == 0 and entry.get("finished_at") and
                 entry.get("started_at") == worker.get("started_at") and
-                entry.get("command") == codex_command(entry["command"][0], session) and
+                entry.get("command") == codex_command(entry["command"][0], session, worker.get("model_route")) and
                 worker.get("session_id") == session, "WORKER_RECEIPT_REFUSED")
         revision, branch = worker["source_revision"], worker["branch"]
         require(BRANCH.fullmatch(branch) is not None and revision == manifest["input_context"]["sstc_revision"],
