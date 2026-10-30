@@ -18,6 +18,7 @@ from task_storage import (atomic_json, checkpoint_path, companion, load_checkpoi
                           save_pair, task_lock, validate_pair)
 from update_task_state import utc_now
 from execution_limits import limits_for_task
+from model_routing import route_for, route_arguments, validate_analysis_route, usage_summary
 
 SESSION_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 MAX_EVENTS = 8 * MAX_TOTAL_BYTES
@@ -164,13 +165,14 @@ def bind_model_result(model: dict, manifest: dict) -> dict:
     return result
 
 
-def command(executable: str, schema: Path, session_id: str | None) -> list[str]:
+def command(executable: str, schema: Path, session_id: str | None, model_route=None) -> list[str]:
     args = [executable, "exec", "--sandbox", "read-only", "--ignore-user-config",
             "--ignore-rules", "--skip-git-repo-check", "--json",
             "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
             "-c", "features.shell_tool=false", "-c", "features.unified_exec=false",
             "-c", "features.apps=false", "-c", "features.plugins=false",
             "-c", "project_doc_max_bytes=0"]
+    args.extend(route_arguments(model_route))
     if session_id:
         if not SESSION_ID.fullmatch(session_id):
             raise ValueError("SESSION_ID")
@@ -431,6 +433,9 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
             validate_pair(path, state, log)
             manifest, bodies = bundle(state, inputs.absolute())
             previous = log.get("codex_analysis")
+            model_route = route_for(log, "analysis", state["risk_level"])
+            if previous:
+                validate_analysis_route(state, log, previous)
             session = None
             if state["status"] != "ANALYZING":
                 raise ValueError("ANALYZING_REQUIRED")
@@ -481,7 +486,7 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                 schema_path = cwd / "schema.json"
                 analysis_schema = model_schema(load_document(SCHEMA_PATH))
                 atomic_json(schema_path, output_schema(analysis_schema))
-                args = command(executable, schema_path, session)
+                args = command(executable, schema_path, session, model_route)
                 prompt = (
                     "Analyze the supplied SST-AX evidence only. Return one JSON result matching the schema. "
                     "Write summary, evidence reasons, impact reasons and unresolved questions in Korean. "
@@ -539,6 +544,9 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                           "attempt": state["attempt"], "started_at": now,
                           "inputs_directory": str(inputs.absolute())}
                 log["codex_analysis"] = record
+                if model_route is not None:
+                    record["model_route"] = model_route
+                    record["routing_risk"] = state["risk_level"]
                 entry = {"name": "codex-impact", "command": args[:-1], "exit_code": None,
                          "started_at": now, "finished_at": None, "artifact_paths": []}
                 log["commands"].append(entry)
@@ -566,6 +574,7 @@ def run(task_file: Path, inputs: Path, executable: str) -> str:
                     code, raw, fault = invoke(args, prompt, cwd, on_session,
                                               timeout=min(TIMEOUT, budget.remaining), on_tick=budget.tick,
                                               on_start=on_start)
+                    record["usage"] = usage_summary(raw)
                     entry["exit_code"] = code
                     final, outcome = (None, fault) if fault else parse_events(raw)
                     outcome = fault or outcome or ("CODEX_FAILED" if code else None)

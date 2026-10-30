@@ -85,6 +85,9 @@ class SstcWorkerTest(unittest.TestCase):
         log["codex_analysis"] = {"session_id": SESSION, "outcome": "VALID",
                                   "manifest_sha256": __import__("hashlib").sha256(canonical(manifest)).hexdigest(),
                                   "result_file": "result.json", "result_sha256": __import__("hashlib").sha256(canonical(self.result)).hexdigest()}
+        from model_routing import route_for
+        log["codex_analysis"]["model_route"] = route_for(log, "analysis", storage.load_json(self.task)["risk_level"])
+        log["codex_analysis"]["routing_risk"] = storage.load_json(self.task)["risk_level"]
         storage.atomic_json(self.task.parent / "result.json", self.result)
         state = storage.load_json(self.task)
         # Build the exact analysis checkpoint expected by the shared approval validator.

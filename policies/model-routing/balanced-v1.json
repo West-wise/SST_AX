@@ -1,0 +1,7 @@
+{
+  "profile": "balanced-v1",
+  "analysis": {"model": "gpt-6.1-sol", "effort": "medium"},
+  "implementation": {"model": "gpt-6.1-sol", "effort": "medium"},
+  "high_risk": {"model": "gpt-6.1-sol", "effort": "high"},
+  "text": {"model": "gpt-6-luna", "effort": "low"}
+}
